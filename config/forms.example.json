@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "forms": [
+    {
+      "id": "job-application",
+      "enabled": true,
+      "from": "notifications@example.test",
+      "recipient": "owner@example.test",
+      "subject_prefix": "Job application",
+      "reply_to_field": "email",
+      "success_url": null,
+      "allowed_origins": ["http://127.0.0.1:3000"],
+      "fields": [
+        { "name": "full_name", "type": "text", "required": true, "max_length": 120 },
+        { "name": "email", "type": "email", "required": true, "max_length": 254 },
+        { "name": "position", "type": "text", "required": true, "max_length": 120 },
+        { "name": "portfolio", "type": "url", "required": false, "max_length": 500 },
+        { "name": "message", "type": "text", "required": false, "max_length": 4000 }
+      ]
+    },
+    {
+      "id": "contact",
+      "enabled": true,
+      "from": "notifications@example.test",
+      "recipient": "owner@example.test",
+      "subject_prefix": "Contact enquiry",
+      "reply_to_field": "email",
+      "success_url": null,
+      "allowed_origins": ["http://127.0.0.1:3000"],
+      "fields": [
+        { "name": "full_name", "type": "text", "required": true, "max_length": 120 },
+        { "name": "email", "type": "email", "required": true, "max_length": 254 },
+        { "name": "message", "type": "text", "required": true, "max_length": 4000 }
+      ]
+    }
+  ]
+}

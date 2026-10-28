@@ -1,0 +1,43 @@
+# Caddy Reverse Proxy Configuration for Raxo Email
+# Domain: forms.raxobox.com
+# Automatic HTTPS via Let's Encrypt / ZeroSSL
+
+{
+    email admin@raxobox.com
+    admin off
+}
+
+forms.raxobox.com {
+    # Forward all traffic to the internal Raxo API gateway container
+    reverse_proxy api:3000 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+
+        # Healthcheck to avoid routing to dead container
+        health_uri /health/live
+        health_interval 10s
+        health_timeout 3s
+    }
+
+    # Security headers
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    }
+
+    # Request size limits (11 MiB to accommodate multipart file attachments)
+    request_body {
+        max_size 11534336
+    }
+
+    # Logging
+    log {
+        output stdout
+        format json
+    }
+}

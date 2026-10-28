@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build, Test, and Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: raxo_demo
+          POSTGRES_PASSWORD: local_demo_only
+          POSTGRES_DB: raxo_email_demo
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+      mailpit:
+        image: axllent/mailpit:v1.22.4
+        ports:
+          - 1025:1025
+          - 8025:8025
+
+      clamav:
+        image: clamav/clamav:1.4
+        ports:
+          - 3310:3310
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@a3252b78c470c02df07e9d792dbb42c7bfc9061f # v3.0.0
+        with:
+          version: 12.6.0
+          run_install: false
+
+      - name: Setup local configuration and test database
+        run: |
+          cp .env.example .env
+          mkdir -p config storage/quarantine storage/clean storage/mime storage/tmp exports
+          cp config/forms.example.json config/forms.json
+          # Create raxo_email_test database inside PostgreSQL service
+          PGPASSWORD=local_demo_only psql -h 127.0.0.1 -p 55432 -U raxo_demo -d raxo_email_demo -c "CREATE DATABASE raxo_email_test;"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run database migrations
+        run: pnpm run db:migrate
+
+      - name: Run code formatting, type checking, and test suites
+        run: pnpm run check
+
+      - name: Run end-to-end deterministic demo verification
+        run: pnpm run demo:verify
+
+      - name: Run release checks and audit archive
+        run: pnpm run check:release

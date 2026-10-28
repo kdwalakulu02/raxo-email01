@@ -1,0 +1,54 @@
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:3d317ea5cf83d5cf599a38f3e5e4ef3be1acb3d5b7a151b6dbf08c3755cf9427
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:55432:5432"
+    environment:
+      POSTGRES_USER: raxo_demo
+      POSTGRES_PASSWORD: local_demo_only
+      POSTGRES_DB: raxo_email_demo
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./config/dev-init.sql:/docker-entrypoint-initdb.d/01-dev-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U raxo_demo -d raxo_email_demo"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  mailpit:
+    image: axllent/mailpit:v1.22.4@sha256:d15ceb8c4c379a515a8c2738b81373574cbe15951804fca92cb53da634e447b9
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
+    environment:
+      MP_MAX_MESSAGES: 500
+      MP_SMTP_AUTH_ACCEPT_ANY: 0
+    volumes:
+      - mailpit_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8025/api/v1/info"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  clamav:
+    image: clamav/clamav:1.4.1@sha256:d713c23067eb7a8dfef527376a74ad49b9cb12fb10d3224765d1d6a8f6bb0d8a
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3310:3310"
+    volumes:
+      - clamav_db:/var/lib/clamav
+    healthcheck:
+      test: ["CMD-SHELL", "echo PING | nc -w 2 127.0.0.1 3310 | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 36
+      start_period: 60s
+
+volumes:
+  postgres_data:
+  mailpit_data:
+  clamav_db:

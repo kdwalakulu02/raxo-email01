@@ -1,0 +1,135 @@
+# Raxo Email — Production Docker Compose Configuration
+# Target: Contabo VPS (Ubuntu 22.04 / 24.04 LTS), Domain: raxobox.com
+# Security: Only ports 80/443 exposed to the Internet via Caddy.
+# All application databases, workers, and scanners operate on an isolated internal network.
+
+version: "3.8"
+
+networks:
+  raxo_internal:
+    driver: bridge
+    internal: false # Needs outbound internet access for Postal SMTP and ClamAV updates
+
+volumes:
+  postgres_data:
+    driver: local
+  clamav_definitions:
+    driver: local
+  attachment_storage:
+    driver: local
+  caddy_data:
+    driver: local
+  caddy_config:
+    driver: local
+
+services:
+  # 1. Reverse Proxy (TLS termination & HTTP routing)
+  caddy:
+    image: caddy:2-alpine
+    container_name: raxo_caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - raxo_internal
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # 2. Raxo Fastify HTTP Gateway (API & Form Generator)
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: raxo_api
+    restart: unless-stopped
+    command: >
+      sh -c "node dist/src/migrate.js && node dist/src/server.js"
+    env_file:
+      - .env.production
+    environment:
+      - NODE_ENV=production
+      - HOST=0.0.0.0
+      - PORT=3000
+    volumes:
+      - attachment_storage:/app/storage
+      - ./config:/app/config:ro
+    networks:
+      - raxo_internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clamav:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health/live').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # 3. Background Durable Queue & SMTP Handoff Worker
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: raxo_worker
+    restart: unless-stopped
+    command: ["node", "dist/src/worker.js"]
+    env_file:
+      - .env.production
+    environment:
+      - NODE_ENV=production
+    volumes:
+      - attachment_storage:/app/storage
+      - ./config:/app/config:ro
+    networks:
+      - raxo_internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clamav:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+  # 4. PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: raxo_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-raxo_production}
+      POSTGRES_USER: ${POSTGRES_USER:-raxo_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Database password must be set in .env.production}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - raxo_internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # 5. ClamAV Antivirus Daemon
+  clamav:
+    image: clamav/clamav:stable
+    container_name: raxo_clamav
+    restart: unless-stopped
+    volumes:
+      - clamav_definitions:/var/lib/clamav
+    networks:
+      - raxo_internal
+    healthcheck:
+      test: ["CMD-SHELL", "clamdscan --version || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s

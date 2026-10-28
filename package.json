@@ -1,0 +1,45 @@
+{
+  "name": "raxo-email",
+  "version": "0.1.0-alpha",
+  "description": "A single-operator website form gateway that retains fields and PDF files in durable storage before handing a notification to a configured SMTP server.",
+  "type": "module",
+  "main": "dist/src/server.js",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "packageManager": "pnpm@12.6.0",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "format:check": "prettier --check \"src/**/*.ts\" \"scripts/**/*.ts\" \"test/**/*.ts\" \"config/*.json\" \"examples/*.{html,md}\" \"*.md\" \"docs/*.md\"",
+    "dev": "node --env-file=.env --import tsx --watch src/server.ts",
+    "dev:worker": "node --env-file=.env --import tsx --watch src/worker.ts",
+    "db:migrate": "node --env-file=.env --import tsx src/migrate.ts",
+    "cli": "node --env-file=.env --import tsx src/cli.ts",
+    "services:up": "./scripts/services.sh up",
+    "services:down": "./scripts/services.sh down",
+    "test:unit": "pnpm run build && node --env-file=.env --test dist/test/unit.*.test.js",
+    "test:integration": "pnpm run build && node --env-file=.env --test --test-concurrency=1 dist/test/integration.*.test.js",
+    "check": "pnpm run format:check && pnpm run typecheck && pnpm run test:unit && pnpm run test:integration && pnpm run build",
+    "demo:verify": "node --env-file=.env --import tsx scripts/demo.ts",
+    "check:release": "node --env-file=.env --import tsx scripts/release-check.ts"
+  },
+  "dependencies": {
+    "@fastify/multipart": "10.1.6",
+    "fastify": "5.12.7",
+    "file-type": "22.2.0",
+    "nodemailer": "10.2.1",
+    "pg": "8.23.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/mailparser": "3.9.0",
+    "@types/node": "26.6.5",
+    "@types/nodemailer": "8.0.2",
+    "@types/pg": "8.23.1",
+    "mailparser": "3.12.4",
+    "prettier": "3.9.10",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2"
+  }
+}

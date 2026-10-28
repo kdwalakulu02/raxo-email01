@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Asynchronous Form Submission (AJAX / Fetch)</title>
+    <style>
+      :root {
+        --bg: #0b0f19;
+        --card: #111827;
+        --border: #1f293d;
+        --text: #f3f4f6;
+        --muted: #9ca3af;
+        --primary: #6366f1;
+        --success: #10b981;
+        --danger: #ef4444;
+        --font: system-ui, -apple-system, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        background-color: var(--bg);
+        color: var(--text);
+        font-family: var(--font);
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1.5rem;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 1rem;
+        padding: 2.25rem;
+        max-width: 500px;
+        width: 100%;
+      }
+      h2 {
+        font-size: 1.5rem;
+        margin-bottom: 0.5rem;
+      }
+      p.desc {
+        color: var(--muted);
+        font-size: 0.9rem;
+        margin-bottom: 1.5rem;
+      }
+      .form-group {
+        margin-bottom: 1rem;
+      }
+      label {
+        display: block;
+        font-size: 0.85rem;
+        font-weight: 600;
+        margin-bottom: 0.35rem;
+      }
+      input,
+      textarea {
+        width: 100%;
+        padding: 0.75rem 1rem;
+        background: #030712;
+        border: 1px solid #374151;
+        border-radius: 0.5rem;
+        color: white;
+        font-size: 0.95rem;
+      }
+      input:focus,
+      textarea:focus {
+        border-color: var(--primary);
+        outline: none;
+      }
+      button {
+        width: 100%;
+        padding: 0.875rem;
+        background: var(--primary);
+        color: white;
+        border: none;
+        border-radius: 0.5rem;
+        font-size: 1rem;
+        font-weight: 600;
+        cursor: pointer;
+        margin-top: 1rem;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .alert {
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin-top: 1.25rem;
+        font-size: 0.9rem;
+        display: none;
+      }
+      .alert-success {
+        background: rgba(16, 185, 129, 0.15);
+        border: 1px solid var(--success);
+        color: #6ee7b7;
+      }
+      .alert-danger {
+        background: rgba(239, 68, 68, 0.15);
+        border: 1px solid var(--danger);
+        color: #fca5a5;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h2>AJAX Contact Form</h2>
+      <p class="desc">Submits asynchronously using standard JavaScript <code>fetch()</code>.</p>
+
+      <!-- Configure your form endpoint -->
+      <form id="contact-form">
+        <div class="form-group">
+          <label for="name">Name</label>
+          <input type="text" id="name" name="name" required placeholder="Alex Smith" />
+        </div>
+
+        <div class="form-group">
+          <label for="email">Email</label>
+          <input type="email" id="email" name="email" required placeholder="alex@example.com" />
+        </div>
+
+        <div class="form-group">
+          <label for="message">Message</label>
+          <textarea
+            id="message"
+            name="message"
+            rows="4"
+            required
+            placeholder="Type your message..."
+          ></textarea>
+        </div>
+
+        <!-- Honeypot -->
+        <input type="text" name="_honey" style="display: none" tabindex="-1" autocomplete="off" />
+
+        <button type="submit" id="submit-btn">Send via AJAX</button>
+      </form>
+
+      <div id="status-success" class="alert alert-success">
+        ✓ Message sent successfully! Receipt ID: <span id="receipt-id"></span>
+      </div>
+
+      <div id="status-error" class="alert alert-danger">
+        ✗ Failed to send message: <span id="error-message"></span>
+      </div>
+    </div>
+
+    <script>
+      const FORM_ENDPOINT = "https://forms.yourdomain.com/f/YOUR_FORM_ID";
+
+      const form = document.getElementById("contact-form");
+      const submitBtn = document.getElementById("submit-btn");
+      const successBox = document.getElementById("status-success");
+      const errorBox = document.getElementById("status-error");
+      const receiptId = document.getElementById("receipt-id");
+      const errorMessage = document.getElementById("error-message");
+
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        successBox.style.display = "none";
+        errorBox.style.display = "none";
+        submitBtn.disabled = true;
+        submitBtn.innerText = "Sending...";
+
+        const formData = new FormData(form);
+        const payload = Object.fromEntries(formData.entries());
+
+        try {
+          const response = await fetch(FORM_ENDPOINT, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json",
+            },
+            body: JSON.stringify(payload),
+          });
+
+          const data = await response.json();
+
+          if (response.ok) {
+            form.reset();
+            receiptId.innerText = data.submission_id || "received";
+            successBox.style.display = "block";
+          } else {
+            errorMessage.innerText = data.error?.message || "An unexpected error occurred.";
+            errorBox.style.display = "block";
+          }
+        } catch (err) {
+          errorMessage.innerText = err.message || "Network error. Please try again.";
+          errorBox.style.display = "block";
+        } finally {
+          submitBtn.disabled = false;
+          submitBtn.innerText = "Send via AJAX";
+        }
+      });
+    </script>
+  </body>
+</html>

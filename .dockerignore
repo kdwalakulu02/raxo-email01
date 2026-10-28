@@ -1,0 +1,21 @@
+node_modules/
+dist/
+data/
+storage/
+exports/
+coverage/
+logs/
+*.log
+dumps/
+backups/
+keys/
+certs/
+*.tar.gz
+*.tgz
+*.zip
+
+.env*
+config/forms.json
+.git/
+.github/
+raw reference/

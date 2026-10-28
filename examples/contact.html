@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Contact Enquiry — Raxo Email Demo</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 600px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+        line-height: 1.5;
+        color: #222;
+      }
+      label {
+        display: block;
+        margin-top: 1rem;
+        font-weight: 600;
+      }
+      input,
+      textarea {
+        width: 100%;
+        padding: 0.5rem;
+        margin-top: 0.25rem;
+        box-sizing: border-box;
+      }
+      button {
+        margin-top: 1.5rem;
+        padding: 0.75rem 1.5rem;
+        background: #0052cc;
+        color: #fff;
+        border: none;
+        border-radius: 4px;
+        font-size: 1rem;
+        cursor: pointer;
+      }
+      .note {
+        background: #f0f4f8;
+        padding: 1rem;
+        border-left: 4px solid #0052cc;
+        margin-bottom: 1.5rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Contact Enquiry Demo</h1>
+    <div class="note">
+      <strong>Local Demo Mode:</strong> Submitting this contact enquiry posts to the local form
+      gateway and triggers a captured notification in Mailpit.
+    </div>
+
+    <form
+      id="contactForm"
+      action="http://127.0.0.1:3000/forms/contact"
+      method="POST"
+      enctype="multipart/form-data"
+    >
+      <input type="hidden" id="submissionId" name="_submission_id" value="" />
+      <input type="hidden" name="_honey" value="" />
+
+      <label for="fullName">Full Name *</label>
+      <input
+        type="text"
+        id="fullName"
+        name="full_name"
+        required
+        maxlength="120"
+        value="Alex Example"
+      />
+
+      <label for="email">Email *</label>
+      <input
+        type="email"
+        id="email"
+        name="email"
+        required
+        maxlength="254"
+        value="alex@example.test"
+      />
+
+      <label for="message">Message *</label>
+      <textarea id="message" name="message" rows="4" required maxlength="4000">
+General enquiry message from local demo</textarea>
+
+      <label for="attachments">Optional Attachment (PDF only, max 5 files, 10MB total)</label>
+      <input type="file" id="attachments" name="attachments" accept=".pdf" multiple />
+
+      <!-- In production, Cloudflare Turnstile CAPTCHA widget -->
+      <div
+        class="cf-turnstile"
+        data-sitekey="your-turnstile-sitekey"
+        data-action="submit_form"
+        data-response-field-name="_captcha_token"
+      ></div>
+
+      <button type="submit" id="submitBtn">Send Enquiry</button>
+    </form>
+
+    <script>
+      function generateUuidV4() {
+        return ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, (c) =>
+          (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16),
+        );
+      }
+      document.getElementById("submissionId").value = generateUuidV4();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Minimal Contact Form</title>
+  </head>
+  <body>
+    <h1>Contact Us</h1>
+
+    <!-- Replace YOUR_FORM_ID with your generated 192-bit Form ID -->
+    <form action="https://forms.yourdomain.com/f/YOUR_FORM_ID" method="POST">
+      <div>
+        <label for="name">Name:</label>
+        <input type="text" id="name" name="name" required placeholder="Alex Smith" />
+      </div>
+
+      <div>
+        <label for="email">Email:</label>
+        <input type="email" id="email" name="email" required placeholder="alex@example.com" />
+      </div>
+
+      <div>
+        <label for="message">Message:</label>
+        <textarea
+          id="message"
+          name="message"
+          rows="5"
+          required
+          placeholder="Your message..."
+        ></textarea>
+      </div>
+
+      <!-- Honeypot spam defense (invisible to users) -->
+      <input type="text" name="_honey" style="display: none" tabindex="-1" autocomplete="off" />
+
+      <!-- Optional custom redirect URL after submission -->
+      <!-- <input type="hidden" name="_next" value="https://example.com/thank-you.html"> -->
+
+      <div>
+        <button type="submit">Send Message</button>
+      </div>
+    </form>
+  </body>
+</html>
