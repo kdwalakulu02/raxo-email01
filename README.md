@@ -139,6 +139,9 @@ Actual execution results are documented in [docs/DEMO_RESULTS.md](docs/DEMO_RESU
 
 - [White Paper](GITHUB_PUBLIC_WHITE_PAPER.md)
 - [Implemented Quickstart Guide](docs/IMPLEMENTED_QUICKSTART.md)
+- [How to Run on Contabo VPS](docs/HOW_TO_RUN_ON_VPS.md)
+- [Production Deployment Guide](docs/DEPLOYMENT_GUIDE.md)
+- [Postal SMTP Setup & Deliverability](docs/POSTAL_DEPLOYMENT_GUIDE.md)
 - [Locked Scope](docs/01_LOCKED_SCOPE.md)
 - [Contracts and SQL Schema](docs/03_CONTRACTS_AND_SQL.md)
 - [Processing Rules](docs/04_PROCESSING_RULES.md)

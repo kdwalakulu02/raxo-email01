@@ -81,4 +81,5 @@
 - [x] Environment template (`.env.production.example`)
 - [x] Backup & disaster recovery documentation (`docs/BACKUP_AND_RESTORE.md`)
 - [x] Contabo VPS deployment guide (`docs/DEPLOYMENT_GUIDE.md`)
+- [x] Contabo VPS operational run guide (`docs/HOW_TO_RUN_ON_VPS.md`)
 - [x] Postal SMTP configuration & deliverability guide (`docs/POSTAL_DEPLOYMENT_GUIDE.md`)
