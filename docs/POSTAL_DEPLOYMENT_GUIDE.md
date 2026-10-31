@@ -2,14 +2,14 @@
 
 ## 1. Production Architecture & Hostnames
 
-The production email architecture for domain `raxobox.com` separates the web application, mail transport, envelope sender, and bounce receiver:
+The production email architecture for domain `btctoons.com` separates the web application, mail transport, envelope sender, and bounce receiver:
 
-| Hostname | Role | Destination IP / Service |
-| :--- | :--- | :--- |
-| **`forms.raxobox.com`** | Raxo Forms Public Gateway | Contabo VPS IPv4 (Caddy Reverse Proxy) |
-| **`mail.raxobox.com`** | Self-Hosted Postal SMTP Server | Contabo VPS IPv4 (Postal SMTP ports 25, 587) |
-| **`notify.raxobox.com`** | Sender Domain (`From: ...@notify.raxobox.com`) | Authorized via SPF, DKIM, and DMARC |
-| **`bounces.raxobox.com`** | Envelope Return-Path / Bounce Domain | MX 10 `mail.raxobox.com` |
+| Hostname                   | Role                                            | Destination IP / Service                     |
+| :------------------------- | :---------------------------------------------- | :------------------------------------------- |
+| **`forms.btctoons.com`**   | Raxo Forms Public Gateway                       | Contabo VPS IPv4 (Caddy Reverse Proxy)       |
+| **`mail.btctoons.com`**    | Self-Hosted Postal SMTP Server                  | Contabo VPS IPv4 (Postal SMTP ports 25, 587) |
+| **`notify.btctoons.com`**  | Sender Domain (`From: ...@notify.btctoons.com`) | Authorized via SPF, DKIM, and DMARC          |
+| **`bounces.btctoons.com`** | Envelope Return-Path / Bounce Domain            | MX 10 `mail.btctoons.com`                    |
 
 ---
 
@@ -19,21 +19,22 @@ The production email architecture for domain `raxobox.com` separates the web app
 > **Mandatory Contabo Prerequisite:**  
 > By default, Contabo blocks outbound TCP port 25 on all new VPS instances to prevent spam abuse.  
 > Before Postal can transmit outbound email to external mail servers (Gmail, Outlook, Yahoo), you must submit a support request to Contabo:
-> 
+>
 > **Contabo Support Ticket Template:**
+>
 > ```text
 > Subject: Request to unblock outbound port 25 for transactional email server
-> 
+>
 > Hello Contabo Support Team,
-> 
-> I have provisioned VPS [VPS_ID / IP] to run our self-hosted transactional email infrastructure (Postal SMTP) for our service domain raxobox.com.
-> 
+>
+> I have provisioned VPS [VPS_ID / IP] to run our self-hosted transactional email infrastructure (Postal SMTP) for our service domain btctoons.com.
+>
 > Please remove the outbound port 25 restriction on this VPS.
 > I confirm that:
 > 1. We enforce strict double-opt-in / email verification for all form endpoints.
 > 2. We have configured Forward-Confirmed Reverse DNS (FCrDNS), SPF, DKIM, and DMARC.
 > 3. We maintain automated bounce suppression and do not send bulk marketing.
-> 
+>
 > Thank you.
 > ```
 
@@ -47,11 +48,11 @@ External mail servers (especially Gmail and Microsoft SmartScreen) instantly rej
 2. Navigate to **Reverse DNS Management** (or **VPS Control** -> **Manage** -> **Reverse DNS**).
 3. Set the PTR record for your VPS IP:
    - **IP**: `[YOUR_CONTABO_VPS_IP]`
-   - **PTR Target**: `mail.raxobox.com`
+   - **PTR Target**: `mail.btctoons.com`
 4. Confirm resolution:
    ```bash
    dig +short -x [YOUR_CONTABO_VPS_IP]
-   # Must return: mail.raxobox.com.
+   # Must return: mail.btctoons.com.
    ```
 
 ---
@@ -70,7 +71,7 @@ sudo apt install -y git ruby-full
 sudo gem install postal-cli
 
 # Run Postal automated installation
-sudo postal install --host mail.raxobox.com
+sudo postal install --host mail.btctoons.com
 ```
 
 ### 4.2 Start Postal Services
@@ -82,40 +83,47 @@ sudo postal start
 sudo postal status
 ```
 
-Access the Postal web admin at `https://mail.raxobox.com` to configure your first organization and mail server.
+Access the Postal web admin at `https://mail.btctoons.com` to configure your first organization and mail server.
 
 ---
 
-## 5. DNS Records Matrix for `raxobox.com`
+## 5. DNS Records Matrix for `btctoons.com`
 
 Publish the following DNS records in your domain DNS zone (Cloudflare / Registrar):
 
 ### 5.1 Host & Routing Records
+
 ```dns
 # A records
-forms.raxobox.com.    IN A     [CONTABO_VPS_IP]
-mail.raxobox.com.     IN A     [CONTABO_VPS_IP]
+forms.btctoons.com.    IN A     [CONTABO_VPS_IP]
+mail.btctoons.com.     IN A     [CONTABO_VPS_IP]
 
 # Bounce MX record (routes return-path bounces to Postal)
-bounces.raxobox.com.  IN MX 10 mail.raxobox.com.
+bounces.btctoons.com.  IN MX 10 mail.btctoons.com.
 ```
 
 ### 5.2 SPF (Sender Policy Framework)
-Authorize only Postal sending IP to send on behalf of `notify.raxobox.com`:
+
+Authorize only Postal sending IP to send on behalf of `notify.btctoons.com`:
+
 ```dns
-notify.raxobox.com.   IN TXT   "v=spf1 ip4:[CONTABO_VPS_IP] -all"
+notify.btctoons.com.   IN TXT   "v=spf1 ip4:[CONTABO_VPS_IP] -all"
 ```
 
 ### 5.3 DKIM (DomainKeys Identified Mail)
+
 Generate a 2048-bit key in Postal Web Admin under **Mail Server Settings** -> **DKIM Keys**:
+
 ```dns
-postal._domainkey.notify.raxobox.com. IN TXT "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA..."
+postal._domainkey.notify.btctoons.com. IN TXT "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA..."
 ```
 
 ### 5.4 DMARC Record
+
 Enforce alignment and reporting:
+
 ```dns
-_dmarc.notify.raxobox.com. IN TXT "v=DMARC1; p=reject; sp=reject; adkim=r; aspf=r; pct=100; rua=mailto:dmarc-reports@raxobox.com"
+_dmarc.notify.btctoons.com. IN TXT "v=DMARC1; p=reject; sp=reject; adkim=r; aspf=r; pct=100; rua=mailto:dmarc-reports@btctoons.com"
 ```
 
 ---
@@ -125,13 +133,13 @@ _dmarc.notify.raxobox.com. IN TXT "v=DMARC1; p=reject; sp=reject; adkim=r; aspf=
 In your Raxo Email production environment (`.env.production`), connect to Postal via authenticated SMTP over TLS:
 
 ```ini
-SMTP_HOST=mail.raxobox.com
+SMTP_HOST=mail.btctoons.com
 SMTP_PORT=587
 SMTP_TLS_MODE=starttls_required
 SMTP_USERNAME=[POSTAL_CREDENTIAL_USERNAME]
 SMTP_PASSWORD=[POSTAL_CREDENTIAL_PASSWORD]
 SMTP_MAX_MESSAGE_BYTES=20971520
-MESSAGE_ID_DOMAIN=notify.raxobox.com
+MESSAGE_ID_DOMAIN=notify.btctoons.com
 OUTBOUND_ENABLED=true
 ```
 
@@ -150,10 +158,10 @@ Once the Contabo VPS port 25 is unblocked and Postal is live:
    - Confirm receipt in **Primary Inbox**.
    - Inspect raw headers in Gmail ("Show original") to verify:
      - `SPF: PASS with IP [CONTABO_VPS_IP]`
-     - `DKIM: PASS with domain notify.raxobox.com`
+     - `DKIM: PASS with domain notify.btctoons.com`
      - `DMARC: PASS`
 
 3. **Reputation Dashboards**:
-   - Register domain `notify.raxobox.com` with **Google Postmaster Tools**: `https://postmaster.google.com`
+   - Register domain `notify.btctoons.com` with **Google Postmaster Tools**: `https://postmaster.google.com`
    - Register sending IP with **Microsoft SNDS (Smart Network Data Services)**: `https://sendersupport.olc.protection.outlook.com/snds/`
    - Check IP reputation on **Spamhaus Zen**: `https://check.spamhaus.org`

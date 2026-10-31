@@ -2,16 +2,16 @@
 
 ## 1. Target Infrastructure Overview
 
-| Component | Target Specification |
-| :--- | :--- |
-| **Hosting Provider** | Contabo Cloud VPS |
-| **Operating System** | Ubuntu 22.04 LTS or 24.04 LTS x86_64 |
-| **Domain** | `raxobox.com` |
-| **Subdomain** | `forms.raxobox.com` (Web Gateway & API) |
-| **Orchestration** | Docker Compose v2 |
-| **Reverse Proxy** | Caddy v2 (Automated Let's Encrypt TLS) |
-| **Database** | PostgreSQL 16 (Isolated container network) |
-| **Antivirus** | ClamAV Daemon (Isolated container network) |
+| Component            | Target Specification                       |
+| :------------------- | :----------------------------------------- |
+| **Hosting Provider** | Contabo Cloud VPS                          |
+| **Operating System** | Ubuntu 22.04 LTS or 24.04 LTS x86_64       |
+| **Domain**           | `btctoons.com`                             |
+| **Subdomain**        | `forms.btctoons.com` (Web Gateway & API)   |
+| **Orchestration**    | Docker Compose v2                          |
+| **Reverse Proxy**    | Caddy v2 (Automated Let's Encrypt TLS)     |
+| **Database**         | PostgreSQL 16 (Isolated container network) |
+| **Antivirus**        | ClamAV Daemon (Isolated container network) |
 
 ---
 
@@ -55,7 +55,7 @@ To deploy securely from GitHub without exposing personal developer tokens on the
 ### 3.1 Generate Deploy Key on VPS
 
 ```bash
-ssh-keygen -t ed25519 -C "deploy@forms.raxobox.com" -f ~/.ssh/raxo_deploy_key -N ""
+ssh-keygen -t ed25519 -C "deploy@forms.btctoons.com" -f ~/.ssh/raxo_deploy_key -N ""
 ```
 
 ### 3.2 Add Deploy Key to GitHub Private Repository
@@ -97,6 +97,7 @@ nano .env.production
 ```
 
 Generate secure secrets:
+
 ```bash
 # Generate IP_HASH_SECRET
 openssl rand -hex 32
@@ -104,13 +105,15 @@ openssl rand -hex 32
 # Generate POSTGRES_PASSWORD
 openssl rand -hex 32
 ```
+
 Update `.env.production` with these generated values.
 
 ### 4.2 Verify DNS A Record
 
-Ensure `forms.raxobox.com` resolves to your Contabo VPS public IPv4 address:
+Ensure `forms.btctoons.com` resolves to your Contabo VPS public IPv4 address:
+
 ```bash
-dig +short forms.raxobox.com
+dig +short forms.btctoons.com
 ```
 
 ---
@@ -141,7 +144,7 @@ docker compose -f docker-compose.prod.yml logs worker
 docker compose -f docker-compose.prod.yml exec api curl -i http://127.0.0.1:3000/health/ready
 
 # 5. Verify public HTTPS response
-curl -i https://forms.raxobox.com
+curl -i https://forms.btctoons.com
 ```
 
 ---

@@ -70,6 +70,7 @@ chmod 600 "${BACKUP_DIR}/raxo_storage_${BACKUP_DATE}.tar.gz"
 ### 3.1 Restoring the PostgreSQL Database
 
 1. **Stop active API and worker processes** to prevent write conflicts during restore:
+
    ```bash
    docker compose -f docker-compose.prod.yml stop api worker
    ```
@@ -150,6 +151,7 @@ echo "[$(date -Iseconds)] Raxo backup completed successfully."
 ```
 
 Install to root cron:
+
 ```cron
 # Run daily at 02:30 AM UTC
 30 2 * * * /usr/local/bin/raxo-backup.sh >> /var/log/raxo-backup.log 2>&1

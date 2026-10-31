@@ -1,13 +1,13 @@
 # Caddy Reverse Proxy Configuration for Raxo Email
-# Domain: forms.raxobox.com
+# Domain: forms.btctoons.com
 # Automatic HTTPS via Let's Encrypt / ZeroSSL
 
 {
-    email admin@raxobox.com
+    email admin@btctoons.com
     admin off
 }
 
-forms.raxobox.com {
+forms.btctoons.com {
     # Forward all traffic to the internal Raxo API gateway container
     reverse_proxy api:3000 {
         header_up Host {host}

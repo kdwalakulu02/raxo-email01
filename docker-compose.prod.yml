@@ -1,5 +1,5 @@
 # Raxo Email — Production Docker Compose Configuration
-# Target: Contabo VPS (Ubuntu 22.04 / 24.04 LTS), Domain: raxobox.com
+# Target: Contabo VPS (Ubuntu 22.04 / 24.04 LTS), Domain: btctoons.com
 # Security: Only ports 80/443 exposed to the Internet via Caddy.
 # All application databases, workers, and scanners operate on an isolated internal network.
 

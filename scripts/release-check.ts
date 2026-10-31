@@ -49,7 +49,7 @@ async function checkRelease(): Promise<void> {
       const relPath = relative(root, fullPath);
 
       for (const pattern of FORBIDDEN_FILE_PATTERNS) {
-        if (pattern.test(relPath)) {
+        if (pattern.test(relPath) && !relPath.endsWith(".example")) {
           // If git is initialized, check if tracked
           try {
             const gitTracked = execSync(`git ls-files --error-unmatch "${relPath}"`, {
