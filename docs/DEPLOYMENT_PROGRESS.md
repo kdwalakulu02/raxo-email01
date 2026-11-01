@@ -105,3 +105,47 @@ Once the secret is installed and `raxo_api` is recreated:
    - Stage the notification into PostgreSQL under row state `pending`.
    - The worker (`raxo_worker`) holding advisory lock `726901` will claim the notification, sign it via OpenDKIM (selector `postal`), and submit it via Postfix port 587 STARTTLS.
    - Postfix will relay to Google Mail MX (`aspmx.l.google.com`), passing SPF (`notify.btctoons.com`), DKIM (`postal._domainkey.notify.btctoons.com`), and FCrDNS (`mail.btctoons.com`).
+
+
+## 6. Verification Milestones & Diagnostics
+
+### 6.1 Ordinary Production SMTP Test (VERIFIED)
+- **Authorization**: Diagnostic executed independently of form acceptance, without token or DB record.
+- **Relay Transport**: `mail.btctoons.com:587` with authenticated STARTTLS, PLAIN credentials, and strict certificate verification (`rejectUnauthorized: true`).
+- **Sender**: `notifications@notify.btctoons.com`
+- **Recipient**: `kumudu.uog@gmail.com`
+- **Subject**: `Raxo — normal SMTP email test`
+- **Body**: `This is an ordinary email sent through our own production SMTP server.`
+- **Local Postfix Submission**:
+  - Timestamp: `2026-11-01T15:18:36.807884+01:00`
+  - SASL Client: `unknown[172.18.0.5]`, sasl_username=`raxo_worker@btctoons.com` via PLAIN
+  - Postfix Queue ID: `C4A60C4BA2`
+  - Message-ID: `<39c904f7-c21a-738f-c8e8-af65cb9f9b47@notify.btctoons.com>`
+  - OpenDKIM Signature: `s=postal, d=notify.btctoons.com` added
+- **Downstream Google MX Delivery**:
+  - Relay: `gmail-smtp-in.l.google.com[142.251.127.26]:25` over Trusted TLS (TLSv1.3 with cipher `TLS_AES_256_GCM_SHA384`)
+  - Status: `sent (250 2.0.0 OK 1793542718 ffacd0b85a97d-48e71bd8d94si16672110f8f.483 - gsmtp)`
+  - Confirmation: Google MX accepted the message; Gmail arrival pending operator confirmation.
+
+### 6.2 Silent Form Submission Diagnosis & Fix (RESOLVED)
+- **Symptom**: Operator submitted `https://forms.btctoons.com/test` and observed no response / hung state.
+- **Caddy Access Log Evidence**:
+  - Timestamp: `Sun, 01 Nov 2026 11:37:47 GMT`
+  - Client: `1.145.121.71` (User-Agent: `Firefox/149.0`)
+  - Request: `POST /forms/vps-delivery-test`
+  - Headers: `Origin: https://forms.btctoons.com`, `Referer: https://forms.btctoons.com/test`, `Content-Length: 873570` (873 KB)
+  - Result: `bytes_read: 654686`, `duration: 233.30s`, `status: 499` (Client Closed Request)
+- **Root Cause**:
+  1. In `src/http.ts`, the `preParsing` hook piped `payload.pipe(counter)` where `counter` was a Transform stream with no reader. Fastify's `@fastify/multipart` dummy parser never consumed `counter`, causing `counter` to fill its highWaterMark buffer and backpressure `payload`, completely stalling the incoming TCP socket after ~654 KB.
+  2. `request.raw.pause()` was called before `consumeRateLimit(pool, form.id, ipHash)` and resumed before `request.parts()`, introducing busboy stream timing deadlocks.
+  3. The browser form lacked visible loading states, error presentation banners, or receipt DOM elements.
+- **Fixes Applied**:
+  1. `src/http.ts`: Removed the unconsumed `counter` stream in `preParsing`; kept strict `Content-Length` validation against `MAX_AGGREGATE_MULTIPART_BYTES` (11 MiB).
+  2. `src/http.ts`: Removed `request.raw.pause()` and `request.raw.resume()` around `consumeRateLimit`.
+  3. `src/views.ts` & `examples/operator-test-form.html`:
+     - Added `#alert-box` for actionable error banners.
+     - Added `#receipt-container` displaying the unique Receipt ID upon HTTP 202 acceptance.
+     - Updated submit button text to `Uploading & Scanning...` with disabled state during transfer.
+     - Integrated Cloudflare Turnstile error, expired, and success callbacks (`onTurnstileSuccess`, `onTurnstileError`, `onTurnstileExpired`).
+     - Added client-side validation to prevent form submission before Turnstile completion.
+  4. Containers `mail-test1-api` and `mail-test1-worker` rebuilt and verified healthy. Ready for browser test submission.

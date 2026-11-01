@@ -164,7 +164,7 @@ export function buildApp(deps: HttpDependencies): FastifyInstance {
     },
   );
 
-  // Hook: PreParsing byte-counter stream to strictly enforce aggregate multipart limit for all requests
+  // Hook: PreParsing header check to strictly enforce aggregate multipart limit for all requests
   app.addHook("preParsing", async (request, reply, payload) => {
     const contentType = request.headers["content-type"] || "";
     if (!contentType.includes("multipart/form-data")) {
@@ -180,26 +180,7 @@ export function buildApp(deps: HttpDependencies): FastifyInstance {
       );
     }
 
-    let bytesReceived = 0;
-    const counter = new Transform({
-      transform(chunk: Buffer, _encoding, callback) {
-        bytesReceived += chunk.length;
-        if (bytesReceived > MAX_AGGREGATE_MULTIPART_BYTES) {
-          callback(
-            new AppError(
-              "file_too_large",
-              413,
-              `Multipart request aggregate limit of ${MAX_AGGREGATE_MULTIPART_BYTES} bytes exceeded`,
-            ),
-          );
-          return;
-        }
-        callback(null, chunk);
-      },
-    });
-
-    payload.pipe(counter);
-    return counter;
+    return payload;
   });
 
   // Liveness probe
@@ -704,15 +685,10 @@ export function buildApp(deps: HttpDependencies): FastifyInstance {
         throw new AppError("forbidden", 403, `Origin ${origin} is not allowed`);
       }
 
-      // 4. Rate limit check (pause raw stream to avoid data loss during async DB call)
+      // 4. Rate limit check
       const ip = request.ip || "127.0.0.1";
       const ipHash = computeIpHash(config.ipHashSecret, new Date().toISOString(), ip);
-      request.raw.pause();
-      try {
-        await consumeRateLimit(pool, form.id, ipHash);
-      } finally {
-        request.raw.resume();
-      }
+      await consumeRateLimit(pool, form.id, ipHash);
 
       // 5. Parse multipart body and stage files
       const parsed = await parseSubmission(request, form, storage);

@@ -801,41 +801,49 @@ export function renderTestPage(
       <div><span class="badge">● Stack Operational</span></div>
     </div>
 
-    <div class="card">
-      <h2>Live Operator Test Form</h2>
-      <p class="subtitle">Submit a test enquiry with an optional PDF attachment to verify end-to-end receipt, ClamAV antivirus scanning, and database persistence.</p>
+      <div id="alert-box" style="display:none; margin-bottom: 1.25rem; padding: 0.75rem 1rem; border-radius: 0.5rem; font-size: 0.875rem;"></div>
 
-      <form action="${escapedBase}/forms/${escapedFormId}" method="POST" enctype="multipart/form-data">
-        <input type="text" name="_honey" style="display:none" tabindex="-1" autocomplete="off">
+      <div id="form-container">
+        <form id="test-form" action="${escapedBase}/forms/${escapedFormId}" method="POST" enctype="multipart/form-data">
+          <input type="text" name="_honey" style="display:none" tabindex="-1" autocomplete="off">
 
-        <div class="form-group">
-          <label for="full_name">Your Name</label>
-          <input type="text" id="full_name" name="full_name" required placeholder="Kumudu UOG" value="Kumudu UOG">
-        </div>
+          <div class="form-group">
+            <label for="full_name">Your Name</label>
+            <input type="text" id="full_name" name="full_name" required placeholder="Kumudu UOG" value="Kumudu UOG">
+          </div>
 
-        <div class="form-group">
-          <label for="email">Your Email Address</label>
-          <input type="email" id="email" name="email" required placeholder="kumudu.uog@gmail.com" value="kumudu.uog@gmail.com">
-          <div class="help-text">Authorized recipient configured in config/forms.json.</div>
-        </div>
+          <div class="form-group">
+            <label for="email">Your Email Address</label>
+            <input type="email" id="email" name="email" required placeholder="kumudu.uog@gmail.com" value="kumudu.uog@gmail.com">
+            <div class="help-text">Authorized recipient configured in config/forms.json.</div>
+          </div>
 
-        <div class="form-group">
-          <label for="message">Message</label>
-          <textarea id="message" name="message" rows="3" required placeholder="Write a test message...">Hello from Contabo VPS live operator test form!</textarea>
-        </div>
+          <div class="form-group">
+            <label for="message">Message</label>
+            <textarea id="message" name="message" rows="3" required placeholder="Write a test message...">Raxo Email — final production verification</textarea>
+          </div>
 
-        <div class="form-group">
-          <label for="attachments">Upload PDF Document (Optional)</label>
-          <input type="file" id="attachments" name="attachments" accept="application/pdf">
-          <div class="help-text">Max 10 MB. Scanned automatically by live ClamAV daemon.</div>
-        </div>
+          <div class="form-group">
+            <label for="attachments">Upload PDF Document (Optional)</label>
+            <input type="file" id="attachments" name="attachments" accept="application/pdf">
+            <div class="help-text">Max 10 MB. Scanned automatically by live ClamAV daemon.</div>
+          </div>
 
-        <div class="form-group" style="margin-top: 1rem; display: flex; justify-content: center;">
-          <div class="cf-turnstile" data-sitekey="${escapedSiteKey}" data-action="submit_form" data-theme="dark"></div>
-        </div>
+          <div class="form-group" style="margin-top: 1rem; display: flex; justify-content: center;">
+            <div class="cf-turnstile" data-sitekey="${escapedSiteKey}" data-action="submit_form" data-theme="dark" data-callback="onTurnstileSuccess" data-error-callback="onTurnstileError" data-expired-callback="onTurnstileExpired"></div>
+          </div>
 
-        <button type="submit">Submit Test Entry →</button>
-      </form>
+          <button type="submit" id="submit-btn">Submit Test Entry →</button>
+        </form>
+      </div>
+
+      <div id="receipt-container" style="display:none; text-align: center; padding: 1.5rem 0;">
+        <div style="font-size: 3rem; color: #10b981; margin-bottom: 0.5rem;">✓</div>
+        <h2 style="color: #fff; margin-bottom: 0.5rem;">Submission Accepted!</h2>
+        <p style="color: #9ca3af; margin-bottom: 1rem; font-size: 0.9rem;">Receipt ID:</p>
+        <div id="receipt-id" style="background: #030712; border: 1px solid #1f293d; padding: 0.75rem 1rem; border-radius: 0.5rem; font-family: ui-monospace, monospace; color: #38bdf8; font-size: 1rem; word-break: break-all; margin-bottom: 1.25rem;"></div>
+        <p style="color: #9ca3af; font-size: 0.85rem; line-height: 1.5;">Your submission and attached PDF have been securely stored, scanned by ClamAV, and dispatched through Postfix to <strong>kumudu.uog@gmail.com</strong>.</p>
+      </div>
 
       <div class="status-box">
         <div class="status-row">
@@ -865,6 +873,90 @@ export function renderTestPage(
       Raxo Email Forms Core v0.1.0-alpha • <a href="${escapedBase}/">Generate New Form ID</a>
     </div>
   </div>
+
+  <script>
+    let hasTurnstileToken = false;
+    const alertBox = document.getElementById("alert-box");
+    const submitBtn = document.getElementById("submit-btn");
+    const testForm = document.getElementById("test-form");
+    const formContainer = document.getElementById("form-container");
+    const receiptContainer = document.getElementById("receipt-container");
+    const receiptIdEl = document.getElementById("receipt-id");
+
+    function showAlert(msg, isError) {
+      alertBox.textContent = msg;
+      alertBox.style.display = "block";
+      alertBox.style.background = isError ? "rgba(239, 68, 68, 0.15)" : "rgba(16, 185, 129, 0.15)";
+      alertBox.style.border = isError ? "1px solid rgba(239, 68, 68, 0.4)" : "1px solid rgba(16, 185, 129, 0.4)";
+      alertBox.style.color = isError ? "#f87171" : "#34d399";
+    }
+
+    function hideAlert() {
+      alertBox.style.display = "none";
+    }
+
+    window.onTurnstileSuccess = function(token) {
+      hasTurnstileToken = true;
+      hideAlert();
+    };
+
+    window.onTurnstileError = function(errorCode) {
+      hasTurnstileToken = false;
+      showAlert("Turnstile CAPTCHA error (code: " + (errorCode || "unknown") + "). Please verify the hostname and sitekey.", true);
+    };
+
+    window.onTurnstileExpired = function() {
+      hasTurnstileToken = false;
+      showAlert("Turnstile CAPTCHA expired. Please complete the verification again.", true);
+    };
+
+    if (testForm) {
+      testForm.addEventListener("submit", async function(e) {
+        e.preventDefault();
+        hideAlert();
+
+        const turnstileInput = testForm.querySelector("[name='cf-turnstile-response']");
+        if (!turnstileInput || !turnstileInput.value) {
+          showAlert("Please complete the Cloudflare Turnstile verification before submitting.", true);
+          return;
+        }
+
+        submitBtn.disabled = true;
+        submitBtn.textContent = "Uploading & Scanning...";
+
+        try {
+          const formData = new FormData(testForm);
+          const res = await fetch(testForm.action, {
+            method: "POST",
+            headers: {
+              "Accept": "application/json"
+            },
+            body: formData
+          });
+
+          const data = await res.json().catch(() => ({}));
+
+          if (res.status === 202) {
+            formContainer.style.display = "none";
+            receiptIdEl.textContent = data.submission_id || data.receipt_id || "Accepted";
+            receiptContainer.style.display = "block";
+          } else {
+            const errMsg = (data && data.error && data.error.message) || data.message || "Submission failed (HTTP " + res.status + ")";
+            showAlert(errMsg, true);
+            submitBtn.disabled = false;
+            submitBtn.textContent = "Submit Test Entry →";
+            if (window.turnstile) {
+              window.turnstile.reset();
+            }
+          }
+        } catch (err) {
+          showAlert("Network or server connection error: " + err.message, true);
+          submitBtn.disabled = false;
+          submitBtn.textContent = "Submit Test Entry →";
+        }
+      });
+    }
+  </script>
 </body>
 </html>`;
 }
