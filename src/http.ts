@@ -804,6 +804,15 @@ export function buildApp(deps: HttpDependencies): FastifyInstance {
     const requestId = randomUUID();
     const formatted = formatErrorResponse(error, requestId);
 
+    if (formatted.status === 413) {
+      reply.header("connection", "close");
+      try {
+        request.raw.resume();
+      } catch {
+        // ignore
+      }
+    }
+
     const accept = request.headers.accept || "";
     if (accept.includes("text/html") && !accept.includes("application/json")) {
       const escapedMsg = formatted.body.error.message.replace(/[&<>"']/g, "");

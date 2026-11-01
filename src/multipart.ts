@@ -179,7 +179,11 @@ export async function parseSubmission(
       if (activeCheckStream && !activeCheckStream.destroyed) {
         activeCheckStream.destroy(aggregateError);
       }
-      request.raw.destroy(aggregateError);
+      try {
+        request.raw.resume();
+      } catch {
+        // ignore
+      }
     }
   };
   request.raw.on("data", onRawChunk);

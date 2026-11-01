@@ -154,12 +154,16 @@ async function run() {
 
     // -------------------------------------------------------------
     // Test 2: Oversized chunked upload without Content-Length (> 11 MiB)
+    // Specifically exercises the 11 MiB AGGREGATE limit without hitting the 10 MB per-file limit.
+    // Preamble: 2 MB of multipart preamble data (RFC 2046).
+    // File: Streamed PDF attachment.
+    // When aggregate reaches 11 MiB, file size is only ~9.4 MB (< 10 MB per-file limit).
     // -------------------------------------------------------------
-    console.log("\n[Test 2] Oversized chunked upload without Content-Length (> 11 MiB)...");
+    console.log("\n[Test 2] Oversized chunked upload exercising aggregate limit without Content-Length (> 11 MiB)...");
     const boundary2 = "----BoundaryTest2" + crypto.randomBytes(6).toString("hex");
-    const headerPrefix = `--${boundary2}\r\nContent-Disposition: form-data; name="full_name"\r\n\r\nAlex\r\n--${boundary2}\r\nContent-Disposition: form-data; name="attachments"; filename="huge.pdf"\r\nContent-Type: application/pdf\r\n\r\n%PDF-1.4\n`;
 
-    const res2 = await new Promise((resolve) => {
+    let responseReceived = false;
+    const res2 = await new Promise((resolve, reject) => {
       const req = http.request(
         `${baseUrl}/forms/job-application`,
         {
@@ -172,57 +176,100 @@ async function run() {
           },
         },
         (res) => {
+          responseReceived = true;
           let data = "";
           res.on("data", (c) => (data += c));
-          res.on("end", () => resolve({ status: res.statusCode, body: data }));
+          res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body: data }));
         }
       );
 
       req.on("error", (err) => {
-        resolve({ status: "socket_error", message: err.message });
+        if (!responseReceived) {
+          reject(err);
+        }
       });
 
-      req.write(headerPrefix);
+      // Stream asynchronously
+      (async () => {
+        try {
+          // 1. Send 2 MB of multipart preamble (RFC 2046 preamble before first boundary)
+          const preamble = Buffer.alloc(2 * 1024 * 1024, 0x20);
+          let ok = req.write(preamble);
+          if (!ok && !responseReceived) {
+            await new Promise((r) => req.once("drain", r));
+          }
 
-      // Stream 12 MB in 512 KB chunks
-      const chunk = Buffer.alloc(512 * 1024, 0x41);
-      let sentBytes = 0;
-      const totalToSend = 12 * 1024 * 1024; // 12 MiB
+          // 2. Start multipart body with form fields and PDF attachment
+          const headerPrefix = `--${boundary2}\r\nContent-Disposition: form-data; name="full_name"\r\n\r\nAlex\r\n--${boundary2}\r\nContent-Disposition: form-data; name="attachments"; filename="large.pdf"\r\nContent-Type: application/pdf\r\n\r\n%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\nstream\n`;
+          ok = req.write(Buffer.from(headerPrefix));
+          if (!ok && !responseReceived) {
+            await new Promise((r) => req.once("drain", r));
+          }
 
-      function sendNext() {
-        if (sentBytes >= totalToSend) {
-          req.end(`\r\n--${boundary2}--\r\n`);
-          return;
+          // 3. Stream 256 KB chunks of file data until 12 MB total aggregate is sent
+          const chunk = Buffer.alloc(256 * 1024, 0x41);
+          let sent = preamble.length + Buffer.byteLength(headerPrefix);
+          const totalTarget = 12 * 1024 * 1024;
+
+          while (sent < totalTarget && !responseReceived) {
+            sent += chunk.length;
+            ok = req.write(chunk);
+            if (!ok && !responseReceived) {
+              await new Promise((r) => {
+                const cleanup = () => {
+                  req.off("drain", onDrain);
+                  req.off("response", onRes);
+                };
+                const onDrain = () => { cleanup(); r(); };
+                const onRes = () => { cleanup(); r(); };
+                req.once("drain", onDrain);
+                req.once("response", onRes);
+              });
+            }
+          }
+
+          if (!responseReceived) {
+            try {
+              req.end(`\r\n--${boundary2}--\r\n`);
+            } catch {}
+          }
+        } catch {
+          // Ignore stream write errors if server aborted/closed with response
         }
-        sentBytes += chunk.length;
-        const canContinue = req.write(chunk);
-        if (canContinue) {
-          setImmediate(sendNext);
-        } else {
-          req.once("drain", sendNext);
-        }
-      }
-      sendNext();
+      })();
     });
 
-    console.log("Test 2 Response:", res2.status, res2.body || res2.message);
-    assert.ok(
-      res2.status === 413 || res2.status === "socket_error" || res2.status === 400,
-      `Expected 413, 400, or socket reset for oversized chunked upload, got: ${res2.status}`
-    );
-    if (res2.status === 413) {
-      const json2 = JSON.parse(res2.body);
-      assert.equal(json2.error.code, "file_too_large");
-    }
+    console.log("Test 2 Response:", res2.status, res2.body);
+    assert.equal(res2.status, 413, `Expected HTTP 413 for oversized aggregate upload, got: ${res2.status}`);
+    const json2 = JSON.parse(res2.body);
+    assert.equal(json2.error.code, "file_too_large");
+    assert.match(json2.error.message, /aggregate limit/i, "Error message explicitly references aggregate limit");
 
     // Allow server async pipeline cleanup to finish unlinking tmp file
     await new Promise((r) => setTimeout(r, 300));
 
-    // Verify cleanup: tmp/ directory must have 0 orphaned files
+    // 1. Verify cleanup: tmp/ directory must have 0 orphaned files
     const tmpFilesAfterOversized = fs.readdirSync(path.join(storageDir, "tmp"));
     assert.equal(tmpFilesAfterOversized.length, 0, "No orphaned tmp files after oversized chunked upload");
+
+    // 2. Verify quarantine: only Test 1's file is present; any staged file from Test 2 was cleaned up
+    const quarantineFilesAfter = fs.readdirSync(path.join(storageDir, "quarantine"));
+    assert.equal(quarantineFilesAfter.length, 1, "Quarantine only contains Test 1 file; rejected upload cleaned up");
+
+    // 3. Verify absence of accepted submissions / notifications in database
+    const subCount = await pool.query("SELECT COUNT(*) FROM submissions;");
+    assert.equal(Number(subCount.rows[0].count), 1, "Only Test 1 submission exists in database");
+    const notifCount = await pool.query("SELECT COUNT(*) FROM notifications;");
+    assert.equal(Number(notifCount.rows[0].count), 1, "Only Test 1 notification exists in database");
+
+    // 4. Verify service health afterward
+    const liveRes = await app.inject({ method: "GET", url: "/health/live" });
+    assert.equal(liveRes.statusCode, 200, "Service remains alive and healthy after rejection");
+    const liveJson = JSON.parse(liveRes.body);
+    assert.equal(liveJson.status, "ok");
+
     results.test2_oversized_chunked = true;
-    console.log("✓ Test 2 PASSED: 11 MiB aggregate limit enforced on chunked upload without Content-Length, tmp files clean.");
+    console.log("✓ Test 2 PASSED: 11 MiB aggregate limit returned HTTP 413, connection clean, zero orphaned files, zero DB records, service healthy.");
 
     // -------------------------------------------------------------
     // Test 3: Aborted upload cleanup (client socket disconnect)

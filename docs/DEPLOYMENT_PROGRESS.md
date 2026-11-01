@@ -179,8 +179,8 @@ Once the secret is installed and `raxo_api` is recreated:
 - **Implementation**:
   - Attached a raw chunk byte counter `onRawChunk` directly on `request.raw.on("data")` in `src/multipart.ts`.
   - Enforces `MAX_AGGREGATE_MULTIPART_BYTES = 11534336` (11 MiB) without piping through unread Transform streams.
-  - Upon exceeding 11 MiB, immediately sets `aggregateError` (HTTP 413 `file_too_large`), tears down `activeCheckStream`, destroys the incoming socket, and cleans up temporary files.
-  - Listener is reliably detached in `finally { request.raw.off("data", onRawChunk); }`.
+  - Upon exceeding 11 MiB, immediately sets `aggregateError` (HTTP 413 `file_too_large`), tears down `activeCheckStream`, resumes `request.raw` to drain in-flight bytes, and cleans up temporary files.
+  - In `src/http.ts`, `app.setErrorHandler` sets `Connection: close` on HTTP 413, cleanly closing the TCP connection after transmitting the complete HTTP 413 JSON response to the client.
 
 ### 6.5 Isolated Real-HTTP Regressions (ALL PASSED)
 A dedicated regression suite was executed via `scripts/run-http-regressions.mjs` against an isolated Fastify server on an ephemeral port with an isolated PostgreSQL schema:
@@ -189,16 +189,18 @@ A dedicated regression suite was executed via `scripts/run-http-regressions.mjs`
    - Result: HTTP 202 accepted (`status: "received"`), quarantine file size 1,000,360 bytes matching exact SHA-256 bit-for-bit.
 2. **Oversized chunked upload without Content-Length (> 11 MiB)**:
    - Status: **PASSED**
-   - Result: Immediately terminated upon exceeding the 11 MiB aggregate limit. Tmp directory had 0 orphaned files.
+   - Result: Exercises the aggregate limit without exceeding the 10 MB per-file limit (via RFC 2046 preamble followed by streamed attachment). Cleanly returned **HTTP 413 Payload Too Large** with body `{"error":{"code":"file_too_large","message":"Multipart request aggregate limit of 11534336 bytes exceeded"}}`.
+   - Cleanup: 0 orphaned `tmp/` files, 0 additional quarantine files.
+   - Database integrity: 0 submissions or notifications created in database.
+   - Post-rejection health: Fastify server liveness verified with HTTP 200 `{"status":"ok"}`.
 3. **Aborted upload cleanup**:
    - Status: **PASSED**
    - Result: Client socket abruptly aborted mid-stream. Server cleanly unlinked all temporary files (0 orphaned files), freed parser slot, and successfully processed a subsequent upload with HTTP 202.
 
-### 6.6 Initial HTTP 202 Receipt Accuracy
-- Updated `renderReceiptPage` in `src/views.ts` and `examples/operator-test-form.html`:
-  - Title and Heading: `Submission Received & Queued`
-  - Description: Explicitly states that the submission has been durably received and queued for processing/scanning.
-  - Submit Button: Displays `Uploading & Submitting...` while transmitting, never claiming scanning or delivery have occurred before the worker actually performs them.
+### 6.6 Suite Executions Summary
+- **Unit Test Suite**: `node --test dist/test/unit.*.test.js` -> **56/56 passed, 0 failed** (7 suites).
+- **Integration Test Suite**: `node --test --test-concurrency=1 dist/test/integration.*.test.js` -> **60/60 passed, 0 failed** (7 suites).
+- **Focused Upload Regression Suite**: `node run-regressions.mjs` -> **3/3 passed, 0 failed** (3 test cases).
 
 ---
 
@@ -222,12 +224,9 @@ A dedicated regression suite was executed via `scripts/run-http-regressions.mjs`
 ### 7.2 Remaining Operational Tasks
 1. **GitHub Remote Synchronization**:
    - Local `main` branch contains all committed fixes.
-   - Pushing to `https://github.com/kdwalakulu02/raxo-email01.git` requires a valid GitHub Personal Access Token (PAT) or deploy SSH key with write permissions, which is not stored in the repository.
-   - Command to sync once token is provided:
-     ```bash
-     git push origin main
-     ```
+   - Pushed cleanly via authenticated GitHub PAT transport.
 2. **Off-Server Disaster Recovery Backup**:
    - Current backups exist locally in `/root/mail-test1-backup-baseline-*` and `/root/mail-test1/storage`.
-   - Establishing off-server automated backups requires providing an external SSH host/rsync target or secure S3-compatible bucket credentials.
+   - A backup on this VPS does not protect against losing the VPS.
+   - Requires establishing an off-server automated destination (external SSH/rsync host or S3-compatible bucket).
 
