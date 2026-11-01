@@ -558,7 +558,7 @@ export function renderReceiptPage(submissionId: string | null, isHeld = false): 
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Submission Received — Raxo Email</title>
+  <title>Submission Received & Queued — Raxo Email</title>
   <style>
     body {
       background-color: #090d16;
@@ -609,8 +609,8 @@ export function renderReceiptPage(submissionId: string | null, isHeld = false): 
 <body>
   <div class="card">
     <div class="icon">✓</div>
-    <h1>Thank You!</h1>
-    <p>Your submission has been received and securely retained.</p>
+    <h1>Submission Received & Queued</h1>
+    <p>Your submission has been durably received and queued for processing.</p>
     <div class="receipt-id">ID: ${escapedId}</div>
     ${
       isHeld
@@ -839,10 +839,10 @@ export function renderTestPage(
 
       <div id="receipt-container" style="display:none; text-align: center; padding: 1.5rem 0;">
         <div style="font-size: 3rem; color: #10b981; margin-bottom: 0.5rem;">✓</div>
-        <h2 style="color: #fff; margin-bottom: 0.5rem;">Submission Accepted!</h2>
+        <h2 style="color: #fff; margin-bottom: 0.5rem;">Submission Received & Queued</h2>
         <p style="color: #9ca3af; margin-bottom: 1rem; font-size: 0.9rem;">Receipt ID:</p>
         <div id="receipt-id" style="background: #030712; border: 1px solid #1f293d; padding: 0.75rem 1rem; border-radius: 0.5rem; font-family: ui-monospace, monospace; color: #38bdf8; font-size: 1rem; word-break: break-all; margin-bottom: 1.25rem;"></div>
-        <p style="color: #9ca3af; font-size: 0.85rem; line-height: 1.5;">Your submission and attached PDF have been securely stored, scanned by ClamAV, and dispatched through Postfix to <strong>kumudu.uog@gmail.com</strong>.</p>
+        <p style="color: #9ca3af; font-size: 0.85rem; line-height: 1.5;">Your submission and attached PDF have been durably received and queued for antivirus scanning and dispatch to <strong>kumudu.uog@gmail.com</strong>.</p>
       </div>
 
       <div class="status-box">
@@ -922,7 +922,7 @@ export function renderTestPage(
         }
 
         submitBtn.disabled = true;
-        submitBtn.textContent = "Uploading & Scanning...";
+        submitBtn.textContent = "Uploading & Submitting...";
 
         try {
           const formData = new FormData(testForm);

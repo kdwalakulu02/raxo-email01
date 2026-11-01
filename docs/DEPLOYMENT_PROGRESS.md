@@ -145,7 +145,89 @@ Once the secret is installed and `raxo_api` is recreated:
   3. `src/views.ts` & `examples/operator-test-form.html`:
      - Added `#alert-box` for actionable error banners.
      - Added `#receipt-container` displaying the unique Receipt ID upon HTTP 202 acceptance.
-     - Updated submit button text to `Uploading & Scanning...` with disabled state during transfer.
+     - Updated submit button text to `Uploading & Submitting...` with disabled state during transfer.
      - Integrated Cloudflare Turnstile error, expired, and success callbacks (`onTurnstileSuccess`, `onTurnstileError`, `onTurnstileExpired`).
      - Added client-side validation to prevent form submission before Turnstile completion.
   4. Containers `mail-test1-api` and `mail-test1-worker` rebuilt and verified healthy. Ready for browser test submission.
+
+### 6.3 Operator-Confirmed Form-to-Gmail Acceptance & Comprehensive Verification
+- **Submission ID**: `bab0db6b-b789-4f63-93d0-c0a869d1c1f8`
+- **Form ID**: `vps-delivery-test`
+- **Created At**: `2026-11-01 14:46:54.486521+00`
+- **Operator Confirmation**: Operator explicitly confirmed receipt in Gmail (`kumudu.uog@gmail.com`) with attachment `Gazette-2026-09-04-Eii.pdf`. Verified end-to-end form acceptance.
+- **Attachment Audit**:
+  - Filename: `Gazette-2026-09-04-Eii.pdf`
+  - Byte Size: `564,314` bytes
+  - SHA-256 Checksum: `81b81b762c5abd0614047865996bbc5b41bc5f8103263b3528f8a9c036d5062c`
+- **Server-Side ClamAV Evidence**:
+  - Scan State: `clean`
+  - Scanned At: `2026-11-01 14:46:59.789892+00`
+  - Scanner Engine: ClamAV Daemon `1.5.4/28170/Sat Oct 31 06:24:42 2026`
+  - Note: Gmail's attachment-scanning label is distinct from our server-side ClamAV evidence.
+- **Worker Notification Audit**:
+  - State: `submitted` (attempt_count: 1, updated_at: `2026-11-01 14:47:00.479114+00`)
+  - Message-ID: `<832257c8-e824-4694-aa78-02602d1f0400@notify.btctoons.com>`
+  - Postfix Queue ID: `3A00EC11E8`
+  - OpenDKIM Signature: `s=postal, d=notify.btctoons.com`
+- **Downstream Google Relay Audit**:
+  - Downstream MX: `gmail-smtp-in.l.google.com[142.251.127.27]:25`
+  - Transport Security: Trusted TLSv1.3 with cipher `TLS_AES_256_GCM_SHA384`
+  - Google Final SMTP Response: `250 2.0.0 OK 1793544421 ffacd0b85a97d-48e71bafd77si18028302f8f.181 - gsmtp` (`status=sent`)
+
+### 6.4 11 MiB Aggregate Limit Enforcement on Uploads Without Content-Length
+- **Problem**: When a client performs chunked streaming (`Transfer-Encoding: chunked`) without a `Content-Length` header, earlier implementations piped into an unread `Transform` stream causing backpressure stalls.
+- **Implementation**:
+  - Attached a raw chunk byte counter `onRawChunk` directly on `request.raw.on("data")` in `src/multipart.ts`.
+  - Enforces `MAX_AGGREGATE_MULTIPART_BYTES = 11534336` (11 MiB) without piping through unread Transform streams.
+  - Upon exceeding 11 MiB, immediately sets `aggregateError` (HTTP 413 `file_too_large`), tears down `activeCheckStream`, destroys the incoming socket, and cleans up temporary files.
+  - Listener is reliably detached in `finally { request.raw.off("data", onRawChunk); }`.
+
+### 6.5 Isolated Real-HTTP Regressions (ALL PASSED)
+A dedicated regression suite was executed via `scripts/run-http-regressions.mjs` against an isolated Fastify server on an ephemeral port with an isolated PostgreSQL schema:
+1. **Valid upload around 1 MB with real HTTP streaming**:
+   - Status: **PASSED**
+   - Result: HTTP 202 accepted (`status: "received"`), quarantine file size 1,000,360 bytes matching exact SHA-256 bit-for-bit.
+2. **Oversized chunked upload without Content-Length (> 11 MiB)**:
+   - Status: **PASSED**
+   - Result: Immediately terminated upon exceeding the 11 MiB aggregate limit. Tmp directory had 0 orphaned files.
+3. **Aborted upload cleanup**:
+   - Status: **PASSED**
+   - Result: Client socket abruptly aborted mid-stream. Server cleanly unlinked all temporary files (0 orphaned files), freed parser slot, and successfully processed a subsequent upload with HTTP 202.
+
+### 6.6 Initial HTTP 202 Receipt Accuracy
+- Updated `renderReceiptPage` in `src/views.ts` and `examples/operator-test-form.html`:
+  - Title and Heading: `Submission Received & Queued`
+  - Description: Explicitly states that the submission has been durably received and queued for processing/scanning.
+  - Submit Button: Displays `Uploading & Submitting...` while transmitting, never claiming scanning or delivery have occurred before the worker actually performs them.
+
+---
+
+## 7. Final Deployment Handoff & Operational Summary
+
+### 7.1 Production Service Status
+- **Host VPS**: `84.247.138.34` (Contabo Ubuntu 24.04 LTS)
+- **Base Directory**: `/root/mail-test1`
+- **Reverse Proxy**: Caddy (`raxo_caddy`) listening on 80/443 with automated Let's Encrypt TLS for `forms.btctoons.com`.
+- **API**: Node 22 (`raxo_api`) listening on internal port 3000, health check `https://forms.btctoons.com/health/ready` returns `{"status":"ready"}`.
+- **Worker**: Node 22 (`raxo_worker`) maintaining advisory lock `726901`, polling for pending notifications and delivering clean submissions.
+- **Database**: PostgreSQL 16 (`raxo_postgres`) with applied migrations `001_initial`, `002_dynamic_forms`, `003_security_hardening`.
+- **Antivirus**: ClamAV 1.5.4 (`raxo_clamav`) daemon scanning quarantined attachments before promotion to clean storage.
+- **Mail Transfer Agent**: Host Postfix 3.8.18 with OpenDKIM, loopback SASL authentication (`raxo_worker@btctoons.com`), and STARTTLS relaying to external recipients.
+- **DNS & Deliverability**:
+  - FCrDNS / PTR: `84.247.138.34` resolves to `mail.btctoons.com` and `mail.btctoons.com` resolves to `84.247.138.34`.
+  - SPF: `v=spf1 ip4:84.247.138.34 -all` on `notify.btctoons.com`.
+  - DKIM: `postal._domainkey.notify.btctoons.com` public key matching OpenDKIM signing key.
+  - Live Gmail Acceptance: Verified with downstream Google MX response `250 2.0.0 OK`.
+
+### 7.2 Remaining Operational Tasks
+1. **GitHub Remote Synchronization**:
+   - Local `main` branch contains all committed fixes.
+   - Pushing to `https://github.com/kdwalakulu02/raxo-email01.git` requires a valid GitHub Personal Access Token (PAT) or deploy SSH key with write permissions, which is not stored in the repository.
+   - Command to sync once token is provided:
+     ```bash
+     git push origin main
+     ```
+2. **Off-Server Disaster Recovery Backup**:
+   - Current backups exist locally in `/root/mail-test1-backup-baseline-*` and `/root/mail-test1/storage`.
+   - Establishing off-server automated backups requires providing an external SSH host/rsync target or secure S3-compatible bucket credentials.
+

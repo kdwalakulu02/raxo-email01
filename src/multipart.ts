@@ -144,6 +144,8 @@ export async function detectPdfBuffer(buffer: Buffer): Promise<boolean> {
   return true;
 }
 
+export const MAX_AGGREGATE_MULTIPART_BYTES = 11534336; // 11 MiB
+
 export async function parseSubmission(
   request: FastifyRequest,
   form: FormConfig,
@@ -162,6 +164,26 @@ export async function parseSubmission(
   let partCount = 0;
   let totalRawFileBytes = 0;
 
+  let aggregateRawBytes = 0;
+  let aggregateError: AppError | null = null;
+  const onRawChunk = (chunk: Buffer) => {
+    aggregateRawBytes += chunk.length;
+    if (aggregateRawBytes > MAX_AGGREGATE_MULTIPART_BYTES) {
+      if (!aggregateError) {
+        aggregateError = new AppError(
+          "file_too_large",
+          413,
+          `Multipart request aggregate limit of ${MAX_AGGREGATE_MULTIPART_BYTES} bytes exceeded`,
+        );
+      }
+      if (activeCheckStream && !activeCheckStream.destroyed) {
+        activeCheckStream.destroy(aggregateError);
+      }
+      request.raw.destroy(aggregateError);
+    }
+  };
+  request.raw.on("data", onRawChunk);
+
   const MAX_PARTS = 30;
   const MAX_FILES = 5;
   const MAX_FILE_BYTES = 10485760;
@@ -172,6 +194,9 @@ export async function parseSubmission(
 
   try {
     for await (const part of parts) {
+      if (aggregateError) {
+        throw aggregateError;
+      }
       partCount++;
       if (partCount > MAX_PARTS) {
         throw new AppError("invalid_form_data", 422, "Exceeded maximum allowed 30 multipart parts");
@@ -206,7 +231,7 @@ export async function parseSubmission(
         let drainPendingReject: ((err: Error) => void) | null = null;
 
         // F03: Attach error and close listeners immediately so checkStream NEVER causes unhandled 'error' events
-        checkStream.on("error", (err) => {
+        checkStream.on("error", (err: any) => {
           if (!stageError) stageError = err;
           if (drainPendingReject) {
             drainPendingReject(err);
@@ -236,15 +261,22 @@ export async function parseSubmission(
 
         try {
           for await (const chunk of part.file) {
+            if (aggregateError) {
+              throw aggregateError;
+            }
+
             if (stageError) {
               throw stageError;
+            }
+
+            if (part.file.truncated) {
+              throw new AppError("file_too_large", 413, "Attachment exceeds maximum size limit");
             }
 
             // Check client abort / stream errors
             if (
               (request.raw.destroyed && !request.raw.readableEnded) ||
-              request.raw.errored ||
-              part.file.truncated
+              request.raw.errored
             ) {
               throw new AppError("bad_request", 400, "Client aborted upload request");
             }
@@ -313,6 +345,10 @@ export async function parseSubmission(
             }
           }
 
+          if (part.file.truncated) {
+            throw new AppError("file_too_large", 413, "Attachment exceeds maximum size limit");
+          }
+
           if (stageError) {
             throw stageError;
           }
@@ -351,6 +387,10 @@ export async function parseSubmission(
             stagedKeysToCleanup.push(staged.key);
           } catch {
             // stage() pipeline failed and unlinked tmpPath
+          }
+
+          if (aggregateError) {
+            throw aggregateError;
           }
 
           if (fileErr instanceof AppError) {
@@ -474,8 +514,9 @@ export async function parseSubmission(
       attachments: stagedAttachments,
     };
   } catch (err) {
+    const effectiveErr = aggregateError || err;
     if (activeCheckStream && !activeCheckStream.destroyed) {
-      activeCheckStream.destroy(err instanceof Error ? err : new Error(String(err)));
+      activeCheckStream.destroy(effectiveErr instanceof Error ? effectiveErr : new Error(String(effectiveErr)));
     }
     if (activeStagePromise) {
       try {
@@ -494,17 +535,19 @@ export async function parseSubmission(
         // ignore
       }
     }
-    const errCode = (err as any)?.code;
+    const errCode = (effectiveErr as any)?.code;
     if (
-      !(err instanceof AppError) &&
+      !(effectiveErr instanceof AppError) &&
       (errCode === "ENOSPC" || errCode === "EACCES" || errCode === "EIO")
     ) {
       throw new AppError(
         "service_unavailable",
         503,
-        `Storage failure during upload: ${(err as Error).message}`,
+        `Storage failure during upload: ${(effectiveErr as Error).message}`,
       );
     }
-    throw err;
+    throw effectiveErr;
+  } finally {
+    request.raw.off("data", onRawChunk);
   }
 }
