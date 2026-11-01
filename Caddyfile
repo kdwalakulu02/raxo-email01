@@ -41,3 +41,25 @@ forms.btctoons.com {
         format json
     }
 }
+
+http://84.247.138.34, http://localhost {
+    # Direct IP access for operator testing before DNS propagation
+    reverse_proxy api:3000 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+    }
+
+    request_body {
+        max_size 11534336
+    }
+
+    log {
+        output stdout
+        format json
+    }
+}
+
+mail.btctoons.com {
+    respond "mail.btctoons.com MTA gateway" 200
+}
+

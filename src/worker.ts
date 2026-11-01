@@ -124,7 +124,7 @@ export class Worker {
     if (!this.hasAdvisoryLock) return;
     await this.pool.query(
       `INSERT INTO schema_meta (key, value, updated_at)
-       VALUES ('worker_heartbeat', to_jsonb($1::text), now())
+       VALUES ('worker_heartbeat', jsonb_build_object('last_seen', $1::text), now())
        ON CONFLICT (key) DO UPDATE
        SET value = EXCLUDED.value, updated_at = now()`,
       [new Date().toISOString()],

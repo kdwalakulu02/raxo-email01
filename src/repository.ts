@@ -174,9 +174,17 @@ export class Repository {
   }
 
   async getWorkerHeartbeat(): Promise<WorkerHeartbeat | null> {
-    const res = await this.pool.query<{ value: WorkerHeartbeat }>(
+    const res = await this.pool.query<{ value: unknown }>(
       `SELECT value FROM schema_meta WHERE key = 'worker_heartbeat'`,
     );
-    return res.rows[0]?.value ?? null;
+    const val = res.rows[0]?.value;
+    if (!val) return null;
+    if (typeof val === "string") {
+      return { last_seen: val };
+    }
+    if (typeof val === "object" && val !== null && "last_seen" in val) {
+      return val as WorkerHeartbeat;
+    }
+    return null;
   }
 }

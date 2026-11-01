@@ -25,6 +25,9 @@ function runProcessAsync(
     cp.stderr?.on("data", (d) => {
       stderr += d.toString();
     });
+    cp.on("error", (err) => {
+      resolve({ status: 127, stdout, stderr: err.message });
+    });
     cp.on("close", (status) => {
       resolve({ status, stdout, stderr });
     });

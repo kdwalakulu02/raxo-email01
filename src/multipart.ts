@@ -390,9 +390,9 @@ export async function parseSubmission(
             }
             clientSubmissionId = trimmed;
           }
-        } else if (fieldName === "_captcha_token") {
-          if (seenFieldNames.has(fieldName)) {
-            throw new AppError("invalid_form_data", 422, "Duplicate _captcha_token field");
+        } else if (fieldName === "_captcha_token" || fieldName === "cf-turnstile-response") {
+          if (seenFieldNames.has("_captcha_token") || seenFieldNames.has("cf-turnstile-response")) {
+            throw new AppError("invalid_form_data", 422, `Duplicate ${fieldName} field`);
           }
           seenFieldNames.add(fieldName);
           captchaToken = value.trim() || null;

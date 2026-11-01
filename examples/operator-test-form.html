@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Raxo Email — Standalone Operator Test Form</title>
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  <style>
+    :root {
+      --bg: #090d16;
+      --card-bg: #111827;
+      --card-border: #1f293d;
+      --text-main: #f3f4f6;
+      --text-muted: #9ca3af;
+      --primary: #4f46e5;
+      --primary-hover: #4338ca;
+      --success: #10b981;
+      --accent: #38bdf8;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg);
+      color: var(--text-main);
+      font-family: var(--font);
+      line-height: 1.6;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+    .container {
+      width: 100%;
+      max-width: 580px;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 1.5rem;
+    }
+    .logo {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 1.4rem;
+      font-weight: 800;
+      color: #fff;
+      margin-bottom: 0.5rem;
+    }
+    .logo span { color: var(--accent); }
+    .badge {
+      display: inline-block;
+      font-size: 0.75rem;
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid rgba(16, 185, 129, 0.4);
+      color: var(--success);
+      padding: 0.2rem 0.6rem;
+      border-radius: 9999px;
+      font-weight: 600;
+      margin-bottom: 0.75rem;
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 1rem;
+      padding: 2rem;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+    }
+    .card h2 {
+      font-size: 1.25rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+    }
+    .card p.subtitle {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      margin-bottom: 1.5rem;
+    }
+    .form-group {
+      margin-bottom: 1.25rem;
+    }
+    label {
+      display: block;
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: #e5e7eb;
+      margin-bottom: 0.35rem;
+    }
+    .help-text {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-top: 0.25rem;
+    }
+    input[type="text"],
+    input[type="email"],
+    textarea {
+      width: 100%;
+      background: #030712;
+      border: 1px solid #374151;
+      border-radius: 0.5rem;
+      padding: 0.65rem 0.85rem;
+      color: #fff;
+      font-size: 0.95rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    input[type="text"]:focus,
+    input[type="email"]:focus,
+    textarea:focus {
+      border-color: var(--primary);
+    }
+    input[type="file"] {
+      width: 100%;
+      background: #030712;
+      border: 1px dashed #374151;
+      border-radius: 0.5rem;
+      padding: 0.65rem;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+    button[type="submit"] {
+      width: 100%;
+      background: var(--primary);
+      color: #fff;
+      font-weight: 600;
+      font-size: 1rem;
+      border: none;
+      border-radius: 0.5rem;
+      padding: 0.85rem;
+      cursor: pointer;
+      transition: background 0.2s;
+      margin-top: 0.5rem;
+    }
+    button[type="submit"]:hover {
+      background: var(--primary-hover);
+    }
+    .status-box {
+      margin-top: 1.5rem;
+      padding: 1rem;
+      background: #030712;
+      border: 1px solid var(--card-border);
+      border-radius: 0.5rem;
+      font-size: 0.8rem;
+    }
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 0.35rem;
+    }
+    .status-row:last-child { margin-bottom: 0; }
+    .status-val { font-family: ui-monospace, monospace; color: var(--accent); }
+    .footer {
+      text-align: center;
+      margin-top: 1.5rem;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="logo">⚡ Raxo<span>Email</span></div>
+      <div><span class="badge">● Operator Test Setup</span></div>
+    </div>
+
+    <div class="card">
+      <h2>Live Operator Test Form</h2>
+      <p class="subtitle">Submit a test enquiry with an optional harmless PDF document to verify intake, ClamAV antivirus scanning, and database durability.</p>
+
+      <!-- Points to the verified production delivery test form on forms.btctoons.com -->
+      <form action="https://forms.btctoons.com/forms/vps-delivery-test" method="POST" enctype="multipart/form-data">
+        <input type="text" name="_honey" style="display:none" tabindex="-1" autocomplete="off">
+
+        <div class="form-group">
+          <label for="full_name">Your Name</label>
+          <input type="text" id="full_name" name="full_name" required placeholder="Kumudu UOG" value="Kumudu UOG">
+        </div>
+
+        <div class="form-group">
+          <label for="email">Your Email Address</label>
+          <input type="email" id="email" name="email" required placeholder="kumudu.uog@gmail.com" value="kumudu.uog@gmail.com">
+          <div class="help-text">Authorized recipient configured in config/forms.json.</div>
+        </div>
+
+        <div class="form-group">
+          <label for="message">Message</label>
+          <textarea id="message" name="message" rows="3" placeholder="Write a test message...">Raxo Email — verified production delivery test</textarea>
+        </div>
+
+        <div class="form-group">
+          <label for="attachments">Upload PDF Document</label>
+          <input type="file" id="attachments" name="attachments" accept="application/pdf">
+          <div class="help-text">Max 10 MB. Scanned automatically by live ClamAV daemon.</div>
+        </div>
+
+        <!-- Cloudflare Turnstile CAPTCHA Widget (action: submit_form) -->
+        <div class="form-group" style="margin-top: 1rem; display: flex; justify-content: center;">
+          <div class="cf-turnstile" data-sitekey="0x4AAAAAAAxxxxxxxxxxxxxx" data-action="submit_form" data-theme="dark"></div>
+        </div>
+
+        <button type="submit">Submit Verified Test Entry →</button>
+      </form>
+
+      <div class="status-box">
+        <div class="status-row">
+          <span>Active Test Form ID:</span>
+          <span class="status-val">vps-delivery-test</span>
+        </div>
+        <div class="status-row">
+          <span>Target Endpoint:</span>
+          <span class="status-val">POST /forms/vps-delivery-test</span>
+        </div>
+        <div class="status-row">
+          <span>Recipient:</span>
+          <span class="status-val">kumudu.uog@gmail.com</span>
+        </div>
+        <div class="status-row">
+          <span>Outbound SMTP:</span>
+          <span class="status-val" style="color: #10b981;">Active (STARTTLS port 587)</span>
+        </div>
+        <div class="status-row">
+          <span>ClamAV Scanner:</span>
+          <span class="status-val" style="color: #10b981;">Online (TCP 3310)</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer">
+      Raxo Email Forms Core v0.1.0-alpha • Contabo VPS (84.247.138.34)
+    </div>
+  </div>
+</body>
+</html>

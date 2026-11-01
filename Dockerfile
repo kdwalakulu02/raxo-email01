@@ -10,7 +10,7 @@ RUN corepack enable && corepack prepare pnpm@12.6.0 --activate
 COPY package.json pnpm-lock.yaml tsconfig.json ./
 
 # Install dependencies including devDependencies for build
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile --ignore-scripts
 
 # Copy application source
 COPY src/ ./src/
@@ -30,7 +30,7 @@ RUN corepack enable && corepack prepare pnpm@12.6.0 --activate
 
 # Copy package descriptors and install production-only dependencies
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --prod --frozen-lockfile
+RUN pnpm install --prod --frozen-lockfile --ignore-scripts
 
 # Copy compiled JavaScript and database migrations
 COPY --from=builder /app/dist/ ./dist/

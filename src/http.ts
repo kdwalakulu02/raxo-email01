@@ -30,7 +30,12 @@ import {
   generateHtmlSnippet,
 } from "./forms.js";
 import { sendSystemMessage } from "./smtp.js";
-import { renderGeneratorPage, renderVerificationPage, renderReceiptPage } from "./views.js";
+import {
+  renderGeneratorPage,
+  renderVerificationPage,
+  renderReceiptPage,
+  renderTestPage,
+} from "./views.js";
 
 const MAX_AGGREGATE_MULTIPART_BYTES = 11534336; // 11 MiB aggregate limit
 
@@ -241,9 +246,17 @@ export function buildApp(deps: HttpDependencies): FastifyInstance {
   });
 
   // Minimal Form ID Generator (UI)
-  app.get("/", async (request, reply) => {
+  app.get("/", async (request: FastifyRequest, reply: FastifyReply) => {
     const baseUrl = getBaseUrl(request, config);
     const html = renderGeneratorPage(baseUrl);
+    return reply.status(200).type("text/html").send(html);
+  });
+
+  // Minimal Operator Test Form (GET /test)
+  app.get("/test", async (request: FastifyRequest, reply: FastifyReply) => {
+    const baseUrl = getBaseUrl(request, config);
+    const siteKey = process.env.CAPTCHA_SITEKEY?.trim() || "0x4AAAAAAAxxxxxxxxxxxxxx";
+    const html = renderTestPage(baseUrl, "vps-delivery-test", siteKey);
     return reply.status(200).type("text/html").send(html);
   });
 
