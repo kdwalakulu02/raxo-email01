@@ -625,7 +625,7 @@ export function renderReceiptPage(submissionId: string | null, isHeld = false): 
 export function renderTestPage(
   baseUrl: string,
   formId: string = "vps-delivery-test",
-  siteKey: string = "0x4AAAAAAAxxxxxxxxxxxxxx",
+  siteKey: string = "0x4AAAAAAFvLUA97Ll30BfAu",
 ): string {
   const escapedBase = escapeHtml(baseUrl);
   const escapedFormId = escapeHtml(formId);

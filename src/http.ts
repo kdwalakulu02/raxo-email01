@@ -255,7 +255,7 @@ export function buildApp(deps: HttpDependencies): FastifyInstance {
   // Minimal Operator Test Form (GET /test)
   app.get("/test", async (request: FastifyRequest, reply: FastifyReply) => {
     const baseUrl = getBaseUrl(request, config);
-    const siteKey = process.env.CAPTCHA_SITEKEY?.trim() || "0x4AAAAAAAxxxxxxxxxxxxxx";
+    const siteKey = process.env.CAPTCHA_SITEKEY?.trim() || "0x4AAAAAAFvLUA97Ll30BfAu";
     const html = renderTestPage(baseUrl, "vps-delivery-test", siteKey);
     return reply.status(200).type("text/html").send(html);
   });
