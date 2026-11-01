@@ -1,9 +1,53 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BACKUP_DIR="${1:-}"
-if [[ -z "$BACKUP_DIR" || ! -d "$BACKUP_DIR" ]]; then
-    echo "Usage: $0 /path/to/backup/data-YYYYMMDD_HHMMSS" >&2
+BACKUP_INPUT="${1:-}"
+if [[ -z "$BACKUP_INPUT" ]]; then
+    echo "Usage: $0 /path/to/backup/data-YYYYMMDD_HHMMSS (or .tar.gz / .tar.gz.enc archive)" >&2
+    exit 1
+fi
+
+# If an archive or encrypted archive is supplied, extract it to a temporary staging folder
+TEMP_EXTRACT=""
+cleanup() {
+    if [[ -n "$TEMP_EXTRACT" && -d "$TEMP_EXTRACT" ]]; then
+        rm -rf "$TEMP_EXTRACT"
+    fi
+}
+trap cleanup EXIT
+
+BACKUP_DIR="$BACKUP_INPUT"
+if [[ -f "$BACKUP_INPUT" ]]; then
+    ARCHIVE_FILE="$BACKUP_INPUT"
+    TEMP_EXTRACT="/tmp/raxo_restore_test_$$"
+    mkdir -p "$TEMP_EXTRACT"
+    
+    if [[ "$ARCHIVE_FILE" == *.enc ]]; then
+        echo "=== Decrypting Archive ==="
+        PLAINTEXT_TAR="${TEMP_EXTRACT}/decrypted.tar.gz"
+        if [[ -n "${BACKUP_PASSPHRASE_FILE:-}" && -f "$BACKUP_PASSPHRASE_FILE" ]]; then
+            openssl enc -d -aes-256-cbc -pbkdf2 -in "$ARCHIVE_FILE" -out "$PLAINTEXT_TAR" -pass "file:${BACKUP_PASSPHRASE_FILE}"
+        elif [[ -n "${BACKUP_PASSPHRASE:-}" ]]; then
+            openssl enc -d -aes-256-cbc -pbkdf2 -in "$ARCHIVE_FILE" -out "$PLAINTEXT_TAR" -pass "env:BACKUP_PASSPHRASE"
+        else
+            echo "ERROR: Encrypted backup requires BACKUP_PASSPHRASE or BACKUP_PASSPHRASE_FILE." >&2
+            exit 1
+        fi
+        tar -xzf "$PLAINTEXT_TAR" -C "$TEMP_EXTRACT"
+        rm -f "$PLAINTEXT_TAR"
+    else
+        tar -xzf "$ARCHIVE_FILE" -C "$TEMP_EXTRACT"
+    fi
+    # Find the data-* directory inside the extracted archive
+    EXTRACTED_DIR=$(find "$TEMP_EXTRACT" -maxdepth 2 -type d -name "data-*" | head -n 1)
+    if [[ -z "$EXTRACTED_DIR" ]]; then
+        EXTRACTED_DIR="$TEMP_EXTRACT"
+    fi
+    BACKUP_DIR="$EXTRACTED_DIR"
+fi
+
+if [[ ! -d "$BACKUP_DIR" ]]; then
+    echo "Usage: $0 /path/to/backup/data-YYYYMMDD_HHMMSS (or .tar.gz / .tar.gz.enc archive)" >&2
     exit 1
 fi
 
@@ -32,7 +76,14 @@ rm -rf "$TEST_EXTRACT"
 echo "Storage archive integrity verified!"
 
 echo "=== 4. Testing Configuration Archive Integrity ==="
-tar -tzf "${BACKUP_DIR}/config.tar.gz"
+if [[ -f "${BACKUP_DIR}/config_and_keys.tar.gz" ]]; then
+    tar -tzf "${BACKUP_DIR}/config_and_keys.tar.gz"
+elif [[ -f "${BACKUP_DIR}/config.tar.gz" ]]; then
+    tar -tzf "${BACKUP_DIR}/config.tar.gz"
+else
+    echo "ERROR: Neither config_and_keys.tar.gz nor config.tar.gz found in $BACKUP_DIR" >&2
+    exit 1
+fi
 echo "Configuration archive integrity verified!"
 
 echo "Restore verification test SUCCEEDED completely."

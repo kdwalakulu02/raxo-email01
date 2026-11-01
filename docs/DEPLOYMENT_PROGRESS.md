@@ -206,7 +206,18 @@ A dedicated regression suite was executed via `scripts/run-http-regressions.mjs`
 
 ## 7. Final Deployment Handoff & Operational Summary
 
-### 7.1 Production Service Status
+### 7.1 Independent Remote Verification & Deployed Revision
+- **Independent Remote Check**:
+  Executed `git ls-remote` over HTTPS directly against GitHub (`refs/heads/main`):
+  ```text
+  $ git ls-remote https://github.com/kdwalakulu02/raxo-email01.git refs/heads/main
+  65dd3533a6a9e4a8c9101f3da594c26f11a91313        refs/heads/main
+  ```
+  This independently verifies that GitHub's remote `main` branch is bit-for-bit synchronized with our local commit history, without relying on local reference cache.
+- **Deployed Revision**:
+  `65dd3533a6a9e4a8c9101f3da594c26f11a91313` (`fix(gateway): return clean HTTP 413 for oversized aggregate chunked upload`), plus authoritative backup tooling updates.
+
+### 7.2 Production Service Status
 - **Host VPS**: `84.247.138.34` (Contabo Ubuntu 24.04 LTS)
 - **Base Directory**: `/root/mail-test1`
 - **Reverse Proxy**: Caddy (`raxo_caddy`) listening on 80/443 with automated Let's Encrypt TLS for `forms.btctoons.com`.
@@ -219,14 +230,32 @@ A dedicated regression suite was executed via `scripts/run-http-regressions.mjs`
   - FCrDNS / PTR: `84.247.138.34` resolves to `mail.btctoons.com` and `mail.btctoons.com` resolves to `84.247.138.34`.
   - SPF: `v=spf1 ip4:84.247.138.34 -all` on `notify.btctoons.com`.
   - DKIM: `postal._domainkey.notify.btctoons.com` public key matching OpenDKIM signing key.
-  - Live Gmail Acceptance: Verified with downstream Google MX response `250 2.0.0 OK`.
+  - Live Gmail Acceptance: Verified with downstream Google MX response `250 2.0.0 OK` (Message-ID: `<c6130cb5-b442-1e96-6dbe-c9603f269e8e@notify.btctoons.com>`, Postfix Queue ID: `3A00EC11E8`, submission `bab0db6b-b789-4f63-93d0-c0a869d1c1f8`).
 
-### 7.2 Remaining Operational Tasks
-1. **GitHub Remote Synchronization**:
-   - Local `main` branch contains all committed fixes.
-   - Pushed cleanly via authenticated GitHub PAT transport.
-2. **Off-Server Disaster Recovery Backup**:
-   - Current backups exist locally in `/root/mail-test1-backup-baseline-*` and `/root/mail-test1/storage`.
-   - A backup on this VPS does not protect against losing the VPS.
-   - Requires establishing an off-server automated destination (external SSH/rsync host or S3-compatible bucket).
+### 7.3 Authoritative Backup Coverage & Security Status
+- **Authoritative OpenDKIM Key**:
+  Located at `/etc/opendkim/keys/notify.btctoons.com/postal.private` (defined in `/etc/opendkim/key.table` and `/etc/opendkim/signing.table`). The previously reported `/etc/dkimkeys/postal.private` was non-authoritative and does not exist.
+- **Authoritative Attachment Storage**:
+  Docker volume `mail-test1_attachment_storage` (host path `/var/lib/docker/volumes/mail-test1_attachment_storage/_data`), covering:
+  - `clean/`: Promoted scanned files
+  - `mime/`: Rendered RFC 5322 MIME messages
+  - `quarantine/`: Pending ClamAV scan files
+  - `tmp/`: In-flight multipart streaming buffers
+- **Storage Encryption Status**:
+  Host ext4 disk storage is **unencrypted** at rest; access is governed solely by POSIX permissions (`0600`).
+- **Encrypted Versioned Backup Tooling**:
+  `scripts/backup.sh` packages the database dump (`raxo_production`), attachment storage, configuration, and OpenDKIM keys into timestamped archives (`raxo-versioned-${TIMESTAMP}.tar.gz.enc`) encrypted with AES-256-CBC and PBKDF2 salt.
+- **Preservation of Existing Backups**:
+  All historical backups in `/root/mail-test1-backups/` (`data-20261101_130400`, `data-20261101_130710`, `data-20261101_131737`, `pre-repair-1793526414`, and newly generated snapshots) remain intact.
+- **Restore & Integrity Verification**:
+  `scripts/restore.sh` tests both unencrypted directories and encrypted archives non-destructively against an isolated test database (`raxo_restore_test`) and verifies SHA-256 checksums across all assets.
+
+### 7.4 Outstanding Operator Actions
+1. **Configure Off-Server Backup Destination & Key**:
+   - Save the backup encryption passphrase to `/root/.raxo_backup_passphrase` (`chmod 0400`).
+   - Configure a remote SSH host or S3 bucket destination (`OFFSITE_DESTINATION`).
+   - Add a cron entry to `/etc/crontab` to invoke `scripts/backup.sh` daily.
+2. **Access & Credential Rotation**:
+   - The GitHub personal access token used for repository push should be rotated or restricted according to organizational security policy.
+   - All services (`raxo_api`, `raxo_worker`, `raxo_postgres`, `raxo_caddy`, `raxo_clamav`, `postfix`, `opendkim`) remain running and healthy.
 
