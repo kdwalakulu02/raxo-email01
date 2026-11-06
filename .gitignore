@@ -18,7 +18,18 @@ certs/
 .env.*
 !.env.example
 !.env.production.example
+!.env.*.example
 
 config/forms.json
 raw reference/
 
+
+# integration additions
+results/
+.stash/
+deploy/staging/.env.staging
+.env.github
+*.rsidb
+**/clamav-defs/
+**/rsidb/
+raxo-email-rust/target/

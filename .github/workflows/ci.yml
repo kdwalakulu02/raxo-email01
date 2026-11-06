@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    working-directory: raxo-email
+
 jobs:
   test:
     name: Build, Test, and Verify
