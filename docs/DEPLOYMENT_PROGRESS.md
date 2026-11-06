@@ -6,7 +6,11 @@
 **Initial Deployment Commit**: `a6b7bb883c5fa4e67f7d312bc8ca70295318db40`  
 **Configuration Backup**: `/root/mail-test1-backups/pre-repair-1793526414` (mode 0700)  
 **Full Application Backup**: `/root/mail-test1-backups/data-20261101_131737` (mode 0700)  
-**Active Document Timestamp**: 2026-11-01 13:30 UTC  
+**Latest Operational Snapshot**: 2026-11-06 09:33 UTC (section 8)
+
+Sections 1-7 retain the historical deployment and handoff evidence. Section 8
+records the latest read-only operational check; historical status claims are not
+new verification of DNS, certificates, backups, or external delivery.
 
 ---
 
@@ -259,3 +263,65 @@ A dedicated regression suite was executed via `scripts/run-http-regressions.mjs`
    - The GitHub personal access token used for repository push should be rotated or restricted according to organizational security policy.
    - All services (`raxo_api`, `raxo_worker`, `raxo_postgres`, `raxo_caddy`, `raxo_clamav`, `postfix`, `opendkim`) remain running and healthy.
 
+---
+
+## 8. Operational Snapshot: 2026-11-06 09:33 UTC
+
+This read-only check did not restart services, change configuration, or send
+email. Only aggregate operational data is published here; message contents,
+recipient addresses, credentials, database dumps, and raw logs remain private.
+
+### 8.1 Service Availability
+
+| Component | Observed status |
+| --- | --- |
+| API (`raxo_api`) | Up 4 days; Docker health check healthy |
+| Worker (`raxo_worker`) | Up 4 days; no Docker health status reported |
+| PostgreSQL (`raxo_postgres`) | Up 5 days; healthy; aggregate SQL queries succeeded |
+| ClamAV (`raxo_clamav`) | Up 5 days; healthy |
+| Caddy (`raxo_caddy`) | Up 5 days; no Docker health status reported |
+| Mailpit (`raxo_mailpit`) | Up 5 days; healthy; local diagnostic trap, not external delivery |
+| Host Postfix | Systemd active; master process listening on IPv4 ports 25 and 587 |
+| Host OpenDKIM | Systemd active |
+
+Postfix reported **1 queued request totaling 2 Kbytes**. Running processes and
+listeners do not establish successful authentication, signing, end-to-end
+delivery, or uptime guarantees; those were not newly tested.
+
+### 8.2 Application Send History
+
+Aggregate queries against `notifications` and `send_attempts` found:
+
+| Record | State or outcome | Count |
+| --- | --- | --- |
+| Notifications | `submitted` | 7 |
+| Send attempts | `submitted` | 7 |
+| Send attempts | `safe_retry` | 1 |
+
+No other notification states or attempt outcomes were present at this snapshot.
+The retained notifications were created between 2026-10-31 21:16:09 UTC and
+2026-11-01 14:46:54 UTC. Successful SMTP handoff attempts occurred between
+2026-10-31 21:18:43 UTC and 2026-11-01 14:46:59 UTC.
+
+These are retained database records, not a guaranteed lifetime total or a count
+of every message sent directly through Postfix. `submitted` means SMTP
+acceptance, not inbox delivery or a read receipt.
+
+### 8.3 Retained Postfix Log Aggregates
+
+The available mail log covered 2026-10-31 21:34:34 UTC through
+2026-11-06 09:19:02 UTC. Counts were parsed from Postfix status records without
+publishing individual records:
+
+| Status | Status records | Distinct queue IDs within that status |
+| --- | --- | --- |
+| `sent` | 5 | 5 |
+| `deferred` | 100 | 1 |
+| `bounced` | 10 | 10 |
+| `expired` | 0 | 0 |
+
+Status records describe recipient-level transport outcomes. Repeated deferrals
+are not 100 separate emails; queue IDs can appear in multiple status groups,
+and the log can include directly submitted messages and generated bounces.
+These counts must not be added to the application count or treated as proof of
+inbox placement. They also do not establish a complete lifetime history.
