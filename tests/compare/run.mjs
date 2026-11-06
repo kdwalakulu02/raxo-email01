@@ -227,6 +227,32 @@ if (want("E")) {
   save("E", R.E);
 }
 
+if (want("S")) {
+  // Scanner-update verification: raw scanner verdicts on the real executable, then end-to-end policy.
+  R.S = { direct: {}, scenarios: [] };
+  const sock = "/run/raxosentinel/scan.sock";
+  for (const n of ["normal.pdf", "eicar.pdf", "eicar-stored.zip", "eicar-deflated.zip", "polyglot-stored-zip.pdf", "polyglot-deflated-zip.pdf"]) {
+    docker("cp", join(fx, n), `${I.sentinel}:/tmp/${n}`);
+    let o;
+    try { o = docker("exec", I.sentinel, "/opt/raxosentinel/bin/raxosentinel", "client", "--socket", sock, "--json-envelope", `/tmp/${n}`); }
+    catch (e) { o = e.stdout; } // non-zero exit codes carry the verdict (e.g. 2 = UNSCANNED)
+    R.S.direct[n] = JSON.parse(o);
+    log("S direct", n, "→", R.S.direct[n].status, R.S.direct[n].report?.error ?? JSON.stringify((R.S.direct[n].report?.threats ?? []).map((t) => t.name ?? t)).slice(0, 120));
+  }
+  R.S.scenarios.push(await scenario("S clean PDF", [fileSpec("normal.pdf")]));
+  R.S.scenarios.push(await scenario("S polyglot deflated zip PDF", [fileSpec("polyglot-deflated-zip.pdf")]));
+  R.S.scenarios.push(await scenario("S polyglot stored zip PDF", [fileSpec("polyglot-stored-zip.pdf")]));
+  R.S.scenarios.push(await scenario("S mixed clean + polyglot deflated + eicar", [fileSpec("normal.pdf"), fileSpec("polyglot-deflated-zip.pdf", "application/pdf", "invoice-b.pdf"), fileSpec("eicar.pdf", "application/pdf", "invoice-c.pdf")]));
+  docker("stop", I.sentinel);
+  try {
+    R.S.scenarios.push(await scenario("S scanner stopped, clean PDF + body", [fileSpec("normal.pdf")], { settleMs: 90000 }));
+  } finally {
+    docker("start", I.sentinel);
+    R.S.restored = await sentinelReady();
+  }
+  save("S", R.S);
+}
+
 if (want("F")) {
   R.F = [];
   docker("stop", I.sentinel);

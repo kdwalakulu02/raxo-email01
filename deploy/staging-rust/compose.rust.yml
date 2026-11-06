@@ -90,7 +90,7 @@ services:
       - --worker-timeout-ms
       - "10000"
     volumes:
-      - ${PRIVATE_DIR}/bin/bin:/opt/raxosentinel/bin:ro
+      - ${SENTINEL_BIN_DIR:-${PRIVATE_DIR}/bin/bin}:/opt/raxosentinel/bin:ro
       - ${PRIVATE_DIR}/rsidb:/var/lib/raxosentinel/private:ro
       - sentinel_run:/run/raxosentinel
     restart: "no"

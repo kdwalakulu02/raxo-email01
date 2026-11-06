@@ -13,12 +13,12 @@ export function pdf(streamText) {
     "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
     "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
     "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>\nendobj\n",
-    `4 0 obj\n<< /Length ${Buffer.byteLength(streamText)} >>\nstream\n${streamText}\nendstream\nendobj\n`,
+    `4 0 obj\n<< /Length ${Buffer.byteLength(streamText, "latin1")} >>\nstream\n${streamText}\nendstream\nendobj\n`,
   ];
-  let off = Buffer.byteLength(header);
+  let off = Buffer.byteLength(header, "latin1");
   const offs = objs.map((o) => {
     const v = off;
-    off += Buffer.byteLength(o);
+    off += Buffer.byteLength(o, "latin1");
     return v;
   });
   const xref =
