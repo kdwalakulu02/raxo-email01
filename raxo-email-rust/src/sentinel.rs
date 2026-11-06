@@ -1,0 +1,467 @@
+//! Native RaxoSentinel coordinator client.
+//!
+//! Speaks the coordinator's Unix-socket protocol directly (4-byte big-endian
+//! length prefix + JSON `ScanRequest`, one regular-file descriptor passed with
+//! SCM_RIGHTS, framed JSON response). No scanner port is ever exposed.
+//!
+//! RaxoSentinel is the sole malware scanner in the Rust implementation, so a
+//! verdict other than CLEAN never results in delivery (fail-closed).
+
+use crate::config::AppConfig;
+use crate::storage::sha256_hex;
+use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
+use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::Semaphore;
+use uuid::Uuid;
+
+const MAX_REQUEST_PAYLOAD: usize = 64 * 1024;
+const MAX_RESPONSE_PAYLOAD: usize = 2 * 1024 * 1024;
+const BUSY_RETRIES: u32 = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum Verdict {
+    Clean,
+    Detected,
+    Suspicious,
+    Unscanned,
+    Error,
+    Busy,
+    Timeout,
+}
+
+impl Verdict {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Verdict::Clean => "CLEAN",
+            Verdict::Detected => "DETECTED",
+            Verdict::Suspicious => "SUSPICIOUS",
+            Verdict::Unscanned => "UNSCANNED",
+            Verdict::Error => "ERROR",
+            Verdict::Busy => "BUSY",
+            Verdict::Timeout => "TIMEOUT",
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ScanRequest<'a> {
+    file_name: Option<&'a str>,
+    max_size: Option<u64>,
+    timeout: Option<u64>,
+    max_depth: Option<usize>,
+    test_worker_action: Option<&'a str>,
+}
+
+#[derive(Deserialize, Debug, Default)]
+struct Target {
+    sha256: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Default)]
+struct Threat {
+    name: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Default)]
+struct Report {
+    #[serde(default)]
+    threats: Vec<Threat>,
+    #[serde(default)]
+    sub_targets: Vec<Report>,
+    engine_version: Option<String>,
+    target: Option<Target>,
+}
+
+#[derive(Deserialize, Debug)]
+struct CoordinatorResponse {
+    status: String,
+    report: Option<Report>,
+    error: Option<String>,
+    database_generation: Option<String>,
+}
+
+fn collect_detections(r: &Report, out: &mut Vec<String>) {
+    for t in &r.threats {
+        if let Some(n) = &t.name {
+            out.push(n.clone());
+        }
+    }
+    for s in &r.sub_targets {
+        collect_detections(s, out);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ScanRecord {
+    pub scanner: &'static str,
+    pub shadow: bool,
+    pub verdict: Verdict,
+    pub detection: Option<String>,
+    pub engine_version: Option<String>,
+    pub database_generation: Option<String>,
+    pub sha256: String,
+    pub size_bytes: i64,
+    pub duration_ms: i32,
+    pub error: Option<String>,
+}
+
+/// Delivery decision derived from a scan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScanOutcome {
+    Clean { version: String },
+    Blocked { reason: String },
+    /// Transient or infrastructure failure: never delivers, retried by the worker.
+    Error { reason: String },
+}
+
+pub fn outcome_of(rec: &ScanRecord) -> ScanOutcome {
+    match rec.verdict {
+        Verdict::Clean => ScanOutcome::Clean {
+            version: rec.engine_version.clone().unwrap_or_else(|| "raxosentinel".into()),
+        },
+        Verdict::Detected | Verdict::Suspicious => ScanOutcome::Blocked {
+            reason: rec.detection.clone().unwrap_or_else(|| rec.verdict.as_str().to_lowercase()),
+        },
+        // The scanner could not establish that the content is safe: fail closed.
+        Verdict::Unscanned => ScanOutcome::Blocked {
+            reason: format!("unscanned: {}", rec.error.clone().unwrap_or_else(|| "content not scannable".into())),
+        },
+        Verdict::Error | Verdict::Busy | Verdict::Timeout => ScanOutcome::Error {
+            reason: rec.error.clone().unwrap_or_else(|| rec.verdict.as_str().to_string()),
+        },
+    }
+}
+
+/// Why an attachment is withheld. `NotInspected` must never be presented as a detection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WithheldCategory {
+    Flagged,
+    NotInspected,
+}
+
+impl WithheldCategory {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WithheldCategory::Flagged => "flagged",
+            WithheldCategory::NotInspected => "not_inspected",
+        }
+    }
+}
+
+/// Per-attachment decision under the `withhold` policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Disposition {
+    Deliver { version: String },
+    Withhold { category: WithheldCategory, reason: String, transient: bool },
+}
+
+pub fn disposition_of(rec: &ScanRecord) -> Disposition {
+    let reason = || rec.error.clone().unwrap_or_else(|| rec.verdict.as_str().to_lowercase());
+    match rec.verdict {
+        Verdict::Clean => Disposition::Deliver {
+            version: rec.engine_version.clone().unwrap_or_else(|| "raxosentinel".into()),
+        },
+        Verdict::Detected | Verdict::Suspicious => Disposition::Withhold {
+            category: WithheldCategory::Flagged,
+            reason: rec.detection.clone().unwrap_or_else(|| rec.verdict.as_str().to_lowercase()),
+            transient: false,
+        },
+        Verdict::Unscanned => Disposition::Withhold {
+            category: WithheldCategory::NotInspected,
+            reason: format!("unscanned: {}", reason()),
+            transient: false,
+        },
+        Verdict::Error | Verdict::Busy | Verdict::Timeout => Disposition::Withhold {
+            category: WithheldCategory::NotInspected,
+            reason: reason(),
+            transient: true,
+        },
+    }
+}
+
+#[derive(Clone)]
+pub struct Sentinel {
+    socket: PathBuf,
+    timeout: Duration,
+    max_size: u64,
+    snapshot_dir: PathBuf,
+    gate: Arc<Semaphore>,
+}
+
+impl Sentinel {
+    pub fn new(cfg: &AppConfig, snapshot_dir: PathBuf) -> Self {
+        Self {
+            socket: cfg.sentinel_socket.clone(),
+            timeout: Duration::from_millis(cfg.sentinel_timeout_ms),
+            max_size: cfg.sentinel_max_size,
+            snapshot_dir,
+            // Coordinator defaults to one worker and one pending slot; keep
+            // our own concurrency to that to avoid avoidable BUSY replies.
+            gate: Arc::new(Semaphore::new(1)),
+        }
+    }
+
+    pub fn with_params(socket: PathBuf, timeout: Duration, snapshot_dir: PathBuf, concurrency: usize) -> Self {
+        Self { socket, timeout, max_size: 52_428_800, snapshot_dir, gate: Arc::new(Semaphore::new(concurrency)) }
+    }
+
+    /// Discard snapshots a crashed process left behind; they are never reused.
+    pub fn init_snapshot_dir(&self) -> std::io::Result<()> {
+        let _ = std::fs::remove_dir_all(&self.snapshot_dir);
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&self.snapshot_dir)
+    }
+
+    pub fn socket_exists(&self) -> bool {
+        UnixStream::connect(&self.socket).is_ok()
+    }
+
+    /// Scan the SHA-256-verified bytes. Never panics or errors: every failure
+    /// is represented as an ERROR/TIMEOUT/BUSY record.
+    pub async fn scan(&self, content: Vec<u8>, sha256: &str, attachment_id: &str) -> ScanRecord {
+        let start = Instant::now();
+        let size = content.len() as i64;
+        let mk = move |verdict: Verdict, f: &dyn Fn(&mut ScanRecord)| {
+            let mut r = ScanRecord {
+                scanner: "raxosentinel",
+                shadow: false,
+                verdict,
+                detection: None,
+                engine_version: None,
+                database_generation: None,
+                sha256: String::new(),
+                size_bytes: size,
+                duration_ms: 0,
+                error: None,
+            };
+            f(&mut r);
+            r
+        };
+        let sha = sha256.to_string();
+        let finish = |mut r: ScanRecord| {
+            r.sha256 = sha.clone();
+            r.duration_ms = start.elapsed().as_millis().min(i32::MAX as u128) as i32;
+            r
+        };
+
+        let _permit = match self.gate.acquire().await {
+            Ok(p) => p,
+            Err(_) => return finish(mk(Verdict::Error, &|r| r.error = Some("sentinel_gate_closed".into()))),
+        };
+
+        let snap_dir = self.snapshot_dir.join(Uuid::new_v4().to_string());
+        let this = self.clone();
+        let expected = sha256.to_string();
+        let att = attachment_id.to_string();
+        let joined = tokio::task::spawn_blocking(move || this.scan_blocking(&snap_dir, &att, &content, &expected)).await;
+        let result = match joined {
+            Ok(r) => r,
+            Err(e) => Err((Verdict::Error, format!("sentinel_internal: {e}"))),
+        };
+        match result {
+            Ok(resp) => {
+                let mut names = vec![];
+                if let Some(rep) = &resp.report {
+                    collect_detections(rep, &mut names);
+                }
+                let verdict = match resp.status.as_str() {
+                    "CLEAN" => Verdict::Clean,
+                    "DETECTED" => Verdict::Detected,
+                    "SUSPICIOUS" => Verdict::Suspicious,
+                    "UNSCANNED" => Verdict::Unscanned,
+                    "BUSY" => Verdict::Busy,
+                    _ => Verdict::Error,
+                };
+                let reported = resp.report.as_ref().and_then(|r| r.target.as_ref()).and_then(|t| t.sha256.clone());
+                if let Some(rs) = reported {
+                    if rs.to_lowercase() != sha256 {
+                        return finish(mk(Verdict::Error, &|r| {
+                            r.database_generation = resp.database_generation.clone();
+                            r.error = Some("sentinel_scanned_sha256_mismatch".into());
+                        }));
+                    }
+                }
+                finish(mk(verdict, &|r| {
+                    if !names.is_empty() {
+                        r.detection = Some(names.join(", ").chars().take(500).collect());
+                    }
+                    r.engine_version = resp.report.as_ref().and_then(|x| x.engine_version.clone());
+                    r.database_generation = resp.database_generation.clone();
+                    r.error = resp.error.as_ref().map(|e| e.chars().take(500).collect());
+                }))
+            }
+            Err((verdict, msg)) => finish(mk(verdict, &|r| r.error = Some(msg.chars().take(500).collect()))),
+        }
+    }
+
+    fn scan_blocking(
+        &self,
+        dir: &Path,
+        attachment_id: &str,
+        content: &[u8],
+        expected_sha: &str,
+    ) -> Result<CoordinatorResponse, (Verdict, String)> {
+        let err = |m: &str| (Verdict::Error, m.to_string());
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
+            .map_err(|e| (Verdict::Error, format!("sentinel_internal: {e}")))?;
+        let result = (|| {
+            let file = dir.join(format!("{attachment_id}.pdf"));
+            {
+                let mut f = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o400)
+                    .open(&file)
+                    .map_err(|e| (Verdict::Error, format!("sentinel_internal: {e}")))?;
+                f.write_all(content).and_then(|_| f.sync_all()).map_err(|e| (Verdict::Error, format!("sentinel_internal: {e}")))?;
+            }
+            let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o400));
+            let before = std::fs::read(&file).map_err(|e| (Verdict::Error, format!("sentinel_internal: {e}")))?;
+            if sha256_hex(&before) != expected_sha {
+                return Err(err("snapshot_sha256_mismatch_before_scan"));
+            }
+            let mut attempt = 0;
+            let resp = loop {
+                let resp = self.round_trip(&file)?;
+                if resp.status == "BUSY" && attempt < BUSY_RETRIES {
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_millis(150 * (1 << attempt)));
+                    continue;
+                }
+                break resp;
+            };
+            let after = std::fs::read(&file).map_err(|e| (Verdict::Error, format!("sentinel_internal: {e}")))?;
+            if sha256_hex(&after) != expected_sha {
+                return Err(err("snapshot_sha256_mismatch_after_scan"));
+            }
+            Ok(resp)
+        })();
+        let _ = std::fs::remove_dir_all(dir);
+        result
+    }
+
+    fn round_trip(&self, file: &Path) -> Result<CoordinatorResponse, (Verdict, String)> {
+        let unavailable = |m: String| (Verdict::Error, format!("sentinel_unavailable: {m}"));
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(file)
+            .map_err(|e| unavailable(format!("cannot open snapshot: {e}")))?;
+        let mut stream = UnixStream::connect(&self.socket)
+            .map_err(|e| unavailable(format!("cannot connect to {}: {e}", self.socket.display())))?;
+        stream.set_read_timeout(Some(self.timeout)).ok();
+        stream.set_write_timeout(Some(self.timeout)).ok();
+
+        let name = file.file_name().map(|s| s.to_string_lossy().into_owned());
+        let req = ScanRequest {
+            file_name: name.as_deref(),
+            max_size: Some(self.max_size),
+            timeout: None,
+            max_depth: None,
+            test_worker_action: None,
+        };
+        send_fd_request(&stream, f.as_raw_fd(), &req).map_err(unavailable)?;
+
+        let timed_out = |e: &std::io::Error| {
+            matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
+        };
+        let mut len = [0u8; 4];
+        if let Err(e) = stream.read_exact(&mut len) {
+            return Err(if timed_out(&e) {
+                (Verdict::Timeout, format!("sentinel client exceeded {}ms", self.timeout.as_millis()))
+            } else {
+                unavailable(format!("cannot read response header: {e}"))
+            });
+        }
+        let n = u32::from_be_bytes(len) as usize;
+        if n == 0 || n > MAX_RESPONSE_PAYLOAD {
+            return Err(unavailable(format!("invalid response payload length {n}")));
+        }
+        let mut body = vec![0u8; n];
+        if let Err(e) = stream.read_exact(&mut body) {
+            return Err(if timed_out(&e) {
+                (Verdict::Timeout, format!("sentinel client exceeded {}ms", self.timeout.as_millis()))
+            } else {
+                unavailable(format!("cannot read response body: {e}"))
+            });
+        }
+        let resp: CoordinatorResponse =
+            serde_json::from_slice(&body).map_err(|e| unavailable(format!("malformed response: {e}")))?;
+        if !matches!(resp.status.as_str(), "CLEAN" | "DETECTED" | "SUSPICIOUS" | "UNSCANNED" | "ERROR" | "BUSY") {
+            return Err(unavailable(format!("unknown status {}", resp.status)));
+        }
+        Ok(resp)
+    }
+}
+
+fn send_fd_request(stream: &UnixStream, fd: i32, req: &ScanRequest) -> Result<(), String> {
+    let payload = serde_json::to_vec(req).map_err(|e| format!("cannot serialize request: {e}"))?;
+    if payload.len() > MAX_REQUEST_PAYLOAD {
+        return Err("request payload exceeds limit".into());
+    }
+    let mut message = Vec::with_capacity(4 + payload.len());
+    message.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    message.extend_from_slice(&payload);
+    let mut iov = libc::iovec { iov_base: message.as_mut_ptr() as *mut libc::c_void, iov_len: message.len() };
+    // SAFETY: standard SCM_RIGHTS construction; buffers outlive the sendmsg call.
+    unsafe {
+        let space = libc::CMSG_SPACE(std::mem::size_of::<i32>() as u32) as usize;
+        let mut cbuf = vec![0usize; space.div_ceil(std::mem::size_of::<usize>())];
+        let mut msg: libc::msghdr = std::mem::zeroed();
+        msg.msg_iov = &mut iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = cbuf.as_mut_ptr() as *mut libc::c_void;
+        msg.msg_controllen = space;
+        let cmsg = libc::CMSG_FIRSTHDR(&msg);
+        if cmsg.is_null() {
+            return Err("cannot construct control message".into());
+        }
+        (*cmsg).cmsg_level = libc::SOL_SOCKET;
+        (*cmsg).cmsg_type = libc::SCM_RIGHTS;
+        (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<i32>() as u32) as usize;
+        std::ptr::copy_nonoverlapping(&fd as *const i32 as *const u8, libc::CMSG_DATA(cmsg), std::mem::size_of::<i32>());
+        if libc::sendmsg(stream.as_raw_fd(), &msg, libc::MSG_NOSIGNAL) < 0 {
+            return Err(format!("sendmsg failed: {}", std::io::Error::last_os_error()));
+        }
+    }
+    Ok(())
+}
+
+pub async fn record_scan_result(
+    pool: &PgPool,
+    attachment_id: Uuid,
+    notification_id: Uuid,
+    r: &ScanRecord,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO scan_results (id, attachment_id, notification_id, scanner, shadow, verdict, detection,
+           engine_version, database_generation, sha256, size_bytes, duration_ms, error, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(attachment_id)
+    .bind(notification_id)
+    .bind(r.scanner)
+    .bind(r.shadow)
+    .bind(r.verdict.as_str())
+    .bind(&r.detection)
+    .bind(&r.engine_version)
+    .bind(&r.database_generation)
+    .bind(&r.sha256)
+    .bind(r.size_bytes)
+    .bind(r.duration_ms)
+    .bind(&r.error)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
