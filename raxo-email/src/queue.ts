@@ -4,7 +4,7 @@ import type { Notification, Submission, Attachment, FormConfig, SubmitResult } f
 import type { StorageAdapter } from "./storage.js";
 import { Repository } from "./repository.js";
 import { withTransaction } from "./db.js";
-import { scanStoredPdf } from "./scanner.js";
+import { dualScan, type SentinelConfig } from "./dual-scan.js";
 import { buildNotification } from "./mime.js";
 import { submitRaw, type SmtpConfig } from "./smtp.js";
 import { AppError } from "./errors.js";
@@ -20,6 +20,7 @@ export interface QueueDependencies {
   maxMimeBytes?: number;
   outboundEnabled?: boolean;
   isOwnershipValid?: () => boolean;
+  sentinel?: SentinelConfig;
 }
 
 export async function recoverExpiredLeases(
@@ -186,10 +187,16 @@ export async function processNotification(
       Date.now() - new Date(att.scanned_at).getTime() <= 48 * 60 * 60 * 1000;
 
     if (!isCleanFresh) {
-      const scanRes = await scanStoredPdf(att.storage_key, storage, {
-        host: scannerHost,
-        port: scannerPort,
-      });
+      // Both scanners examine the same SHA-256-verified bytes; only ClamAV drives the policy below.
+      const scanRes = await dualScan(
+        pool,
+        att.id,
+        notif.id,
+        content,
+        actualSha256,
+        { host: scannerHost, port: scannerPort },
+        deps.sentinel,
+      );
 
       if (scanRes.kind === "blocked") {
         // Malware detected! Mark attachment and notification blocked
@@ -234,6 +241,16 @@ export async function processNotification(
       storage.moveToClean(att.storage_key);
       await repo.updateAttachmentScan(pool, att.id, "clean", scanRes.version);
       content = storage.read(att.storage_key, "clean");
+      if (createHash("sha256").update(content).digest("hex") !== actualSha256) {
+        await pool.query(
+          `UPDATE notifications
+           SET state = 'failed', last_error_code = 'attachment_integrity_error',
+               lease_token = NULL, lease_expires_at = NULL, updated_at = now()
+           WHERE id = $1 AND lease_token = $2`,
+          [notif.id, leaseToken],
+        );
+        return { status: "failed", outcome: "attachment_integrity_error" };
+      }
     }
 
     scannedAttachments.push({

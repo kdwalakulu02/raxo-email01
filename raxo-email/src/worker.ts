@@ -10,6 +10,7 @@ import {
   renewLease,
 } from "./queue.js";
 import { runRetention } from "./retention.js";
+import { initSnapshotDir, loadSentinelConfig, type SentinelConfig } from "./dual-scan.js";
 
 export const WORKER_ADVISORY_LOCK_ID = 726901;
 
@@ -24,6 +25,7 @@ export interface WorkerOptions {
   heartbeatIntervalMs?: number;
   leaseDurationSeconds?: number;
   outboundEnabled?: boolean;
+  sentinel?: SentinelConfig;
 }
 
 export class Worker {
@@ -37,6 +39,7 @@ export class Worker {
   public heartbeatIntervalMs: number;
   public leaseDurationSeconds: number;
   public outboundEnabled: boolean;
+  public sentinel?: SentinelConfig;
 
   private lockClient: PoolClient | null = null;
   private isRunning = false;
@@ -62,6 +65,7 @@ export class Worker {
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? 20000;
     this.leaseDurationSeconds = options.leaseDurationSeconds ?? 120;
     this.outboundEnabled = options.outboundEnabled ?? true;
+    this.sentinel = options.sentinel;
     this.hasAdvisoryLock = false;
   }
 
@@ -186,6 +190,7 @@ export class Worker {
         scannerPort: this.scannerPort,
         maxMimeBytes: this.maxMimeBytes,
         outboundEnabled: this.outboundEnabled,
+        sentinel: this.sentinel,
         isOwnershipValid: () => this.hasAdvisoryLock && this.currentLeaseValid,
       });
       if (result.status === "aborted") {
@@ -324,6 +329,8 @@ async function main() {
   const config = await loadConfig();
   const pool = createPool(config.databaseUrl);
   const storage = createStorage(config.storageDir);
+  const sentinel = loadSentinelConfig(process.env, config.storageDir);
+  if (sentinel) initSnapshotDir(sentinel);
 
   const worker = new Worker({
     pool,
@@ -339,6 +346,7 @@ async function main() {
     scannerPort: config.clamdPort,
     maxMimeBytes: config.smtpMaxMessageBytes,
     outboundEnabled: config.outboundEnabled,
+    sentinel,
   });
 
   let isShuttingDown = false;

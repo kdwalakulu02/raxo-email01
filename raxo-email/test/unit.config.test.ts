@@ -231,7 +231,7 @@ describe("U01 & U02: Configuration and Migration Unit Tests", () => {
       // Second run on the same pool/schema must apply 0 and skip 1
       const res = await runMigrations(ctx.pool);
       assert.equal(res.applied.length, 0);
-      assert.deepEqual(res.skipped, ["001_initial", "002_dynamic_forms", "003_security_hardening"]);
+      assert.deepEqual(res.skipped, ["001_initial", "002_dynamic_forms", "003_security_hardening", "004_scan_results"]);
 
       // Verify deliberately modified migration checksum fails
       const tempMigDir = mkdtempSync(join(tmpdir(), "raxo_mig_test_"));

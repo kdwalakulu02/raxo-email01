@@ -1,0 +1,144 @@
+# Isolated staging: own project name, network, volumes, no published ports, no production routing.
+# Run: docker compose -p raxo_combo --env-file deploy/staging/.env.staging -f deploy/staging/compose.staging.yml up -d --build
+# (see README.md; PRIVATE_DIR is prepared by deploy/sentinel/fetch-sentinel.sh)
+
+name: raxo_combo
+
+networks:
+  staging:
+    driver: bridge
+
+volumes:
+  pg_data:
+  attachment_storage:
+  mailpit_data:
+
+x-app-env: &app-env
+  NODE_ENV: development
+  DEMO_MODE: "true"
+  HOST: 127.0.0.1
+  PORT: "3000"
+  DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  STORAGE_DIR: /app/storage
+  FORMS_CONFIG_PATH: /app/config/forms.json
+  IP_HASH_SECRET: ${IP_HASH_SECRET}
+  SMTP_HOST: mailpit
+  SMTP_PORT: "1025"
+  SMTP_TLS_MODE: plain_local
+  MESSAGE_ID_DOMAIN: raxo-combo.test
+  OUTBOUND_ENABLED: "true"
+  CLAMD_HOST: clamav
+  CLAMD_PORT: "3310"
+  SENTINEL_SHADOW_ENABLED: "true"
+  SENTINEL_SOCKET: /run/raxosentinel/scan.sock
+  SENTINEL_BIN: /opt/raxosentinel/bin/raxosentinel
+  SENTINEL_TIMEOUT_MS: "15000"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: raxo_combo_postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks: [staging]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: raxo_combo_mailpit
+    environment:
+      MP_MAX_MESSAGES: "500"
+      MP_SMTP_AUTH_ACCEPT_ANY: "0"
+    volumes:
+      - mailpit_data:/data
+    networks: [staging]
+    ports:
+      - "127.0.0.1:18025:8025"
+
+  clamav:
+    image: clamav/clamav:stable
+    container_name: raxo_combo_clamav
+    environment:
+      CLAMAV_NO_FRESHCLAMD: "true"
+    volumes:
+      # Copy of the live signature set; no updater runs in staging.
+      - ${PRIVATE_DIR}/clamav-defs:/var/lib/clamav
+    networks: [staging]
+    healthcheck:
+      test: ["CMD-SHELL", "clamdscan --version || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+  sentinel:
+    build: ../../raxo-email
+    image: raxo_combo_app:staging
+    container_name: raxo_combo_sentinel
+    user: "1000:1000"
+    # Unix-socket coordinator only; no network listener.
+    network_mode: none
+    command:
+      - /opt/raxosentinel/bin/raxosentinel
+      - serve
+      - --socket
+      - /run/raxosentinel/scan.sock
+      - --private-db-root
+      - /var/lib/raxosentinel/private
+      - --private-generation
+      - phase2d6-unified
+      - --max-workers
+      - "1"
+      - --worker-memory
+      - "1073741824"
+      - --worker-timeout-ms
+      - "10000"
+    volumes:
+      - ${PRIVATE_DIR}/bin/bin:/opt/raxosentinel/bin:ro
+      - ${PRIVATE_DIR}/rsidb:/var/lib/raxosentinel/private
+      - ${PRIVATE_DIR}/run:/run/raxosentinel
+    restart: "no"
+
+  api:
+    image: raxo_combo_app:staging
+    container_name: raxo_combo_api
+    command: ["sh", "-c", "node dist/src/migrate.js && node dist/src/server.js"]
+    environment:
+      <<: *app-env
+    volumes:
+      - attachment_storage:/app/storage
+      - ./forms.staging.json:/app/config/forms.json:ro
+    networks: [staging]
+    depends_on:
+      postgres: { condition: service_healthy }
+      clamav: { condition: service_healthy }
+      sentinel: { condition: service_started }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health/live').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  worker:
+    image: raxo_combo_app:staging
+    container_name: raxo_combo_worker
+    command: ["node", "dist/src/worker.js"]
+    environment:
+      <<: *app-env
+    volumes:
+      - attachment_storage:/app/storage
+      - ./forms.staging.json:/app/config/forms.json:ro
+      - ${PRIVATE_DIR}/bin/bin:/opt/raxosentinel/bin:ro
+      - ${PRIVATE_DIR}/run:/run/raxosentinel
+    networks: [staging]
+    depends_on:
+      api: { condition: service_healthy }
