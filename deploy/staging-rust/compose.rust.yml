@@ -1,0 +1,126 @@
+# Isolated Rust staging: own project name, network, volumes, database and mail sink.
+# RaxoSentinel is the only scanner (no ClamAV). The only published port is the Mailpit UI on
+# 127.0.0.1:18026. Like the Node staging stack, the API binds container loopback with
+# DEMO_MODE=true and publishes no port; reach it from a container sharing its network
+# namespace. The Sentinel coordinator has no network at all.
+# Run: docker compose -p raxo_rust --env-file deploy/staging/.env.staging \
+#        -f deploy/staging-rust/compose.rust.yml up -d --build
+# (PRIVATE_DIR is prepared by deploy/sentinel/fetch-sentinel.sh)
+
+name: raxo_rust
+
+networks:
+  staging:
+    driver: bridge
+
+volumes:
+  pg_data:
+  attachment_storage:
+  mailpit_data:
+  sentinel_run:
+
+x-app-env: &app-env
+  NODE_ENV: development
+  HOST: 127.0.0.1
+  DEMO_MODE: "true"
+  PORT: "3000"
+  DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  STORAGE_DIR: /app/storage
+  FORMS_CONFIG_PATH: /app/config/forms.json
+  IP_HASH_SECRET: ${IP_HASH_SECRET}
+  SMTP_HOST: mailpit
+  SMTP_PORT: "1025"
+  SMTP_TLS_MODE: plain_local
+  MESSAGE_ID_DOMAIN: raxo-rust.test
+  OUTBOUND_ENABLED: "true"
+  SENTINEL_SOCKET: /run/raxosentinel/scan.sock
+  SENTINEL_TIMEOUT_MS: "15000"
+  ATTACHMENT_POLICY: ${ATTACHMENT_POLICY:-withhold}
+  ATTACHMENT_SCAN_RETRIES: ${ATTACHMENT_SCAN_RETRIES:-0}
+  ATTACHMENT_NOTICE_HTML: ${ATTACHMENT_NOTICE_HTML:-true}
+  RUST_LOG: info
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: raxo_rust_postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks: [staging]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: raxo_rust_mailpit
+    environment:
+      MP_MAX_MESSAGES: "500"
+    volumes:
+      - mailpit_data:/data
+    networks: [staging]
+    ports:
+      - "127.0.0.1:18026:8025"
+
+  sentinel:
+    build: ../../raxo-email-rust
+    image: raxo_rust_app:staging
+    container_name: raxo_rust_sentinel
+    user: "1000:1000"
+    network_mode: none
+    command:
+      - /opt/raxosentinel/bin/raxosentinel
+      - serve
+      - --socket
+      - /run/raxosentinel/scan.sock
+      - --private-db-root
+      - /var/lib/raxosentinel/private
+      - --private-generation
+      - phase2d6-unified
+      - --max-workers
+      - "1"
+      - --worker-memory
+      - "1073741824"
+      - --worker-timeout-ms
+      - "10000"
+    volumes:
+      - ${PRIVATE_DIR}/bin/bin:/opt/raxosentinel/bin:ro
+      - ${PRIVATE_DIR}/rsidb:/var/lib/raxosentinel/private:ro
+      - sentinel_run:/run/raxosentinel
+    restart: "no"
+
+  api:
+    image: raxo_rust_app:staging
+    container_name: raxo_rust_api
+    command: ["sh", "-c", "raxo-migrate && raxo-api"]
+    environment:
+      <<: *app-env
+    volumes:
+      - attachment_storage:/app/storage
+      - ./forms.staging.json:/app/config/forms.json:ro
+      - sentinel_run:/run/raxosentinel
+    networks: [staging]
+    depends_on:
+      postgres: { condition: service_healthy }
+      sentinel: { condition: service_started }
+
+  worker:
+    image: raxo_rust_app:staging
+    container_name: raxo_rust_worker
+    command: ["raxo-worker"]
+    environment:
+      <<: *app-env
+    volumes:
+      - attachment_storage:/app/storage
+      - ./forms.staging.json:/app/config/forms.json:ro
+      - sentinel_run:/run/raxosentinel
+    networks: [staging]
+    depends_on:
+      postgres: { condition: service_healthy }
+      api: { condition: service_started }

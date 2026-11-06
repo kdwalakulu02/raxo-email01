@@ -6,7 +6,7 @@ use crate::forms::{
     create_dynamic_form, deactivate_dynamic_form, generate_html_snippet, get_dynamic_form_by_public_id,
     resend_verification, verify_dynamic_form,
 };
-use crate::input::{body_stream, parse_submission, ParsedInput};
+use crate::input::{parse_submission, ParsedInput};
 use crate::ratelimit::{
     compute_ip_hash, consume_deactivation_rate_limit, consume_global_rate_limit, consume_rate_limit,
     consume_recipient_registration_rate_limit, consume_registration_rate_limit,
@@ -19,7 +19,7 @@ use crate::views::{
     render_error_page, render_generator_page, render_receipt_page, render_test_page, render_verification_page,
     GeneratorState, VerificationResult,
 };
-use axum::body::{to_bytes, Body};
+use axum::body::{to_bytes, Body, BodyDataStream};
 use axum::extract::{ConnectInfo, Path, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
@@ -133,6 +133,72 @@ async fn error_middleware(req: Request, next: Next) -> Response {
     out
 }
 
+/// Request body parked outside the handler. Whatever a handler leaves unread when it rejects a
+/// request (rate limit, 403, 404, 415, validation failure mid-upload...) is drained afterwards so
+/// the client reliably receives the JSON error instead of a reset connection (EPIPE).
+#[derive(Clone, Default)]
+struct BodySlot(Arc<std::sync::Mutex<Option<BodyDataStream>>>);
+
+impl BodySlot {
+    fn stream(&self) -> Tracked {
+        let inner = self.0.lock().ok().and_then(|mut g| g.take());
+        Tracked { inner, slot: self.clone() }
+    }
+    fn body(&self) -> Body {
+        Body::from_stream(self.stream())
+    }
+}
+
+/// Hands the remaining (unread) body back to the slot when the consumer is dropped.
+struct Tracked {
+    inner: Option<BodyDataStream>,
+    slot: BodySlot,
+}
+
+impl futures_util::Stream for Tracked {
+    type Item = std::result::Result<axum::body::Bytes, axum::Error>;
+    fn poll_next(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+        match self.inner.as_mut() {
+            Some(s) => std::pin::Pin::new(s).poll_next(cx),
+            None => std::task::Poll::Ready(None),
+        }
+    }
+}
+
+impl Drop for Tracked {
+    fn drop(&mut self) {
+        if let Some(s) = self.inner.take() {
+            if let Ok(mut g) = self.slot.0.lock() {
+                *g = Some(s);
+            }
+        }
+    }
+}
+
+async fn park_body(mut req: Request, next: Next) -> Response {
+    let slot = BodySlot::default();
+    if let Ok(mut g) = slot.0.lock() {
+        *g = Some(std::mem::replace(req.body_mut(), Body::empty()).into_data_stream());
+    }
+    req.extensions_mut().insert(slot.clone());
+    let resp = next.run(req).await;
+    let unread = slot.0.lock().ok().and_then(|mut g| g.take());
+    let too_large = resp.extensions().get::<ErrorMarker>().is_some_and(|m| m.0.status == 413);
+    if let (Some(mut stream), false) = (unread, too_large) {
+        let _ = tokio::time::timeout(Duration::from_secs(3), async {
+            let mut seen = 0usize;
+            while let Some(Ok(chunk)) = futures_util::StreamExt::next(&mut stream).await {
+                seen += chunk.len();
+                if seen > 2 * 1024 * 1024 {
+                    break;
+                }
+            }
+        })
+        .await;
+    }
+    resp
+}
+
 async fn not_found() -> Response {
     AppError::not_found("Route not found").into_response()
 }
@@ -148,8 +214,8 @@ pub fn build_router(state: Shared) -> Router {
         .route("/api/forms/{form_id}/resend", post(resend))
         .route("/f/{form_id}/deactivate", post(deactivate))
         .route("/api/forms/{form_id}/deactivate", post(deactivate))
-        .route("/f/{form_id}", post(submit_public))
-        .route("/forms/{form_id}", post(submit_legacy))
+        .route("/f/{form_id}", post(submit_public).layer(middleware::from_fn(park_body)))
+        .route("/forms/{form_id}", post(submit_legacy).layer(middleware::from_fn(park_body)))
         .route("/demo/job-application", get(demo_job))
         .route("/demo/contact", get(demo_contact))
         .method_not_allowed_fallback(not_found)
@@ -564,7 +630,8 @@ async fn submit_public(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     req: Request,
 ) -> Result<Response> {
-    let (parts, body) = req.into_parts();
+    let (parts, _) = req.into_parts();
+    let slot = parts.extensions.get::<BodySlot>().cloned().unwrap_or_default();
     let headers = parts.headers;
     let ct = content_type(&headers);
     if is_multipart_ct(&ct) {
@@ -606,9 +673,9 @@ async fn submit_public(
 
     let parsed: ParsedInput = if is_multipart_ct(&ct) {
         let boundary = multipart_boundary(&ct).ok_or_else(|| AppError::bad_request("Invalid request syntax."))?;
-        parse_submission(body_stream(body), boundary, &form, &s.storage).await?
+        parse_submission(slot.stream(), boundary, &form, &s.storage).await?
     } else {
-        let raw = read_simple_body(&headers, body).await?;
+        let raw = read_simple_body(&headers, slot.body()).await?;
         if raw.len() > 50 {
             return Err(AppError::bad_request("Too many form fields (maximum 50)"));
         }
@@ -694,7 +761,8 @@ async fn submit_legacy(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     req: Request,
 ) -> Result<Response> {
-    let (parts, body) = req.into_parts();
+    let (parts, _) = req.into_parts();
+    let slot = parts.extensions.get::<BodySlot>().cloned().unwrap_or_default();
     let headers = parts.headers;
     let _guard = InFlight::acquire(&s)?;
     let cfg = &s.config;
@@ -722,7 +790,7 @@ async fn submit_legacy(
     consume_rate_limit(&s.pool, &form.id, &ip_hash(cfg, &ip), Utc::now(), 5, 100).await?;
 
     let boundary = multipart_boundary(&ct).ok_or_else(|| AppError::bad_request("Invalid request syntax."))?;
-    let parsed = parse_submission(body_stream(body), boundary, form, &s.storage).await?;
+    let parsed = parse_submission(slot.stream(), boundary, form, &s.storage).await?;
 
     if !parsed.is_honeypot {
         let hosts: Vec<String> = form
