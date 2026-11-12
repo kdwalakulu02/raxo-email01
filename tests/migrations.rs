@@ -5,7 +5,16 @@ use std::path::Path;
 
 #[test]
 fn migrations_001_to_004_are_byte_identical_to_node_reference() {
-    let node = Path::new(env!("CARGO_MANIFEST_DIR")).join("../raxo-email/migrations");
+    let node = std::env::var_os("RAXO_NODE_MIGRATIONS")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            let local = Path::new(env!("CARGO_MANIFEST_DIR")).join("../raxo-email/migrations");
+            local.exists().then_some(local)
+        })
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../../mail-combo-1/raxo-email/migrations")
+        });
     let rust = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
     let mut checked = 0;
     for entry in std::fs::read_dir(&node).unwrap() {
