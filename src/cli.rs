@@ -145,7 +145,7 @@ async fn dispatch(
                         count(a.id)::int AS attachment_count, n.state AS notification_state
                  FROM submissions s LEFT JOIN attachments a ON a.submission_id = s.id
                  LEFT JOIN notifications n ON n.submission_id = s.id
-                 WHERE s.form_id = $1 AND s.deleted_at IS NULL
+                 WHERE s.form_id = $1 AND s.deleted_at IS NULL AND s.kind = 'form'
                  GROUP BY s.id, n.state ORDER BY s.created_at DESC, s.id DESC LIMIT $2",
                 vec![Bind::Text(form), Bind::Int(limit)],
             )
@@ -161,7 +161,7 @@ async fn dispatch(
             let sub = rows_json(
                 pool,
                 "SELECT id, form_id, client_submission_id, fingerprint, fields, created_at, deleted_at
-                 FROM submissions WHERE id = $1",
+                 FROM submissions WHERE id = $1 AND kind = 'form'",
                 vec![Bind::Uuid(id)],
             )
             .await?;
@@ -290,8 +290,158 @@ async fn dispatch(
             out(&json!({"notification": n, "attempts": attempts}));
             Ok(0)
         }
+        ("capacity", _) => capacity_command(secondary, args.get(2..).unwrap_or_default(), config, pool).await,
         _ => {
             eprintln!("Error: Unknown command '{primary} {secondary}'");
+            Ok(2)
+        }
+    }
+}
+
+async fn capacity_command(
+    action: &str,
+    args: &[String],
+    config: &AppConfig,
+    pool: &PgPool,
+) -> Result<i32, sqlx::Error> {
+    match action {
+        "node" => {
+            let Some(o) = parse_opts(args, &["--node", "--provider", "--per-minute", "--connections"]) else {
+                return Ok(2);
+            };
+            let node = o.get("node").map(String::as_str).unwrap_or(&config.smtp_node_id);
+            let per_minute =
+                o.get("per-minute").and_then(|v| v.parse::<i32>().ok()).filter(|v| (1..=100000).contains(v));
+            let connections = o.get("connections").and_then(|v| v.parse::<i32>().ok()).filter(|v| (1..=64).contains(v));
+            let provider = o.get("provider").map(String::as_str);
+            if !crate::capacity::valid_node_id(node)
+                || per_minute.is_none()
+                || connections.is_none()
+                || provider.is_some_and(|p| p.trim().is_empty() || p.len() > 80 || p.chars().any(char::is_control))
+            {
+                eprintln!(
+                    "Error: capacity node [--node ID] [--provider NAME] --per-minute 1..100000 --connections 1..64"
+                );
+                return Ok(2);
+            }
+            let row: Value = sqlx::query_scalar(
+                "INSERT INTO smtp_nodes (node_id, provider, messages_per_minute, max_connections)
+                 VALUES ($1, COALESCE($2, 'unspecified'), $3, $4)
+                 ON CONFLICT (node_id) DO UPDATE SET
+                   provider = COALESCE($2, smtp_nodes.provider), messages_per_minute = $3,
+                   max_connections = $4, updated_at = clock_timestamp()
+                 RETURNING to_jsonb(smtp_nodes) - 'lock_identity' - 'lock_device' - 'lock_inode'",
+            )
+            .bind(node)
+            .bind(provider)
+            .bind(per_minute)
+            .bind(connections)
+            .fetch_one(pool)
+            .await?;
+            out(&row);
+            Ok(0)
+        }
+        "default" => {
+            let Some(o) = parse_opts(args, &["--per-minute"]) else { return Ok(2) };
+            let Some(limit) =
+                o.get("per-minute").and_then(|v| v.parse::<i32>().ok()).filter(|v| (1..=100000).contains(v))
+            else {
+                eprintln!("Error: capacity default --per-minute 1..100000");
+                return Ok(2);
+            };
+            sqlx::query("UPDATE smtp_capacity_settings SET default_recipient_per_minute = $1 WHERE singleton")
+                .bind(limit)
+                .execute(pool)
+                .await?;
+            out(&json!({"default_recipient_per_minute":limit}));
+            Ok(0)
+        }
+        "recipient" => {
+            let Some(o) = parse_opts(args, &["--email", "--per-minute"]) else { return Ok(2) };
+            let recipient = match crate::forms::validate_recipient_email(o.get("email").map(String::as_str)) {
+                Ok(recipient) => recipient,
+                Err(e) => {
+                    eprintln!("Error: {}", e.message);
+                    return Ok(2);
+                }
+            };
+            let limit = match o.get("per-minute").map(String::as_str) {
+                Some("default") => None,
+                Some(s) => match s.parse::<i32>().ok().filter(|v| (1..=100000).contains(v)) {
+                    Some(n) => Some(n),
+                    None => {
+                        eprintln!("Error: capacity recipient --email ADDRESS --per-minute 1..100000|default");
+                        return Ok(2);
+                    }
+                },
+                None => {
+                    eprintln!("Error: capacity recipient --email ADDRESS --per-minute 1..100000|default");
+                    return Ok(2);
+                }
+            };
+            sqlx::query(
+                "INSERT INTO smtp_recipient_capacity (recipient_key, messages_per_minute) VALUES ($1, $2)
+                 ON CONFLICT (recipient_key) DO UPDATE SET messages_per_minute = EXCLUDED.messages_per_minute",
+            )
+            .bind(&recipient)
+            .bind(limit)
+            .execute(pool)
+            .await?;
+            out(&json!({"recipient":recipient,"messages_per_minute":limit}));
+            Ok(0)
+        }
+        "stats" => {
+            let Some(o) = parse_opts(args, &["--node"]) else { return Ok(2) };
+            let node = o.get("node").map(String::as_str).unwrap_or(&config.smtp_node_id);
+            if !crate::capacity::valid_node_id(node) {
+                eprintln!("Error: invalid SMTP node ID");
+                return Ok(2);
+            }
+            let policies = rows_json(
+                pool,
+                "SELECT node_id, provider, messages_per_minute, max_connections,
+                   (SELECT count(*) FROM send_attempts a WHERE a.node_id = smtp_nodes.node_id
+                     AND (a.finished_at IS NULL OR a.finished_at > clock_timestamp() - interval '60 seconds'))
+                     AS active_or_recent_attempts
+                 FROM smtp_nodes WHERE node_id = $1",
+                vec![Bind::Text(node.into())],
+            )
+            .await?;
+            let Some(policy) = policies.into_iter().next() else {
+                eprintln!("Error: SMTP node policy not found");
+                return Ok(3);
+            };
+            let attempts = rows_json(
+                pool,
+                "SELECT outcome, count(*) AS count FROM send_attempts
+                 WHERE node_id = $1 AND started_at > clock_timestamp() - interval '24 hours'
+                 GROUP BY outcome ORDER BY outcome",
+                vec![Bind::Text(node.into())],
+            )
+            .await?;
+            let queue = rows_json(
+                pool,
+                "SELECT state, count(*) AS count FROM notifications GROUP BY state ORDER BY state",
+                vec![],
+            )
+            .await?;
+            let backoff = rows_json(
+                pool,
+                "SELECT destination_domain, failures, not_before FROM smtp_destination_backoff
+                 WHERE node_id = $1 AND not_before > clock_timestamp() ORDER BY not_before",
+                vec![Bind::Text(node.into())],
+            )
+            .await?;
+            let default_limit: i32 =
+                sqlx::query_scalar("SELECT default_recipient_per_minute FROM smtp_capacity_settings WHERE singleton")
+                    .fetch_one(pool)
+                    .await?;
+            out(&json!({"node":policy,"default_recipient_per_minute":default_limit,
+                "attempts_last_24_hours":attempts,"queue":queue,"destination_backoff":backoff}));
+            Ok(0)
+        }
+        _ => {
+            eprintln!("Error: capacity requires node, default, recipient or stats");
             Ok(2)
         }
     }
@@ -448,7 +598,7 @@ async fn export_attachment(
     }
 }
 
-// ---------------- mail commands (no database needed) ----------------
+// ---------------- mail commands ----------------
 
 /// Parses `--name value` options; returns None (after printing an error) on unknown or
 /// incomplete options.
@@ -613,10 +763,10 @@ async fn send_test(args: &[String]) -> i32 {
         eprintln!("Error: usage: send-test --to <address> [--from <address>]");
         return 2;
     };
-    let cfg = match load_config_from_env() {
+    let (cfg, storage, pool) = match init().await {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Configuration error: {}", e.message);
+            eprintln!("Configuration or storage error: {e}");
             return 2;
         }
     };
@@ -627,42 +777,53 @@ async fn send_test(args: &[String]) -> i32 {
             return 2;
         }
     }
-    let smtp = crate::smtp::SmtpConfig::from_app(&cfg);
     let mode = match cfg.smtp_delivery_mode {
         crate::config::DeliveryMode::Relay => "relay",
         crate::config::DeliveryMode::Direct => "direct",
     };
     let now = Utc::now().to_rfc3339();
-    let text = format!("This is a Raxo Email delivery test sent at {now} via {mode} delivery.\n");
-    let html = format!("<p>This is a Raxo Email delivery test sent at {now} via {mode} delivery.</p>");
-    let r = crate::smtp::send_system_message(
-        &to,
-        "Raxo Email delivery test",
-        &text,
-        &html,
-        &smtp,
-        &from,
-        &cfg.message_id_domain,
-    )
-    .await;
-    let code = match &r {
-        crate::smtp::SubmitResult::Submitted { .. } => None,
-        crate::smtp::SubmitResult::SafeRetry(c)
-        | crate::smtp::SubmitResult::Failed(c)
-        | crate::smtp::SubmitResult::Unknown(c) => Some(c.clone()),
+    let text = format!("This is a Raxo Email delivery test queued at {now} via {mode} delivery.\n");
+    let html = format!("<p>This is a Raxo Email delivery test queued at {now} via {mode} delivery.</p>");
+    let mut tx = match pool.begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            eprintln!("Database connection failure: {e}");
+            return 4;
+        }
     };
+    let notification_id = match crate::outbox::enqueue_system_message(
+        &mut tx,
+        &storage,
+        &crate::outbox::SystemMessage {
+            form_id: "__system_test__",
+            from: &from,
+            to: &to,
+            subject: "Raxo Email delivery test",
+            text: &text,
+            html: &html,
+            message_id_domain: &cfg.message_id_domain,
+            not_after: None,
+        },
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("Could not queue test message: {}", e.message);
+            return 4;
+        }
+    };
+    if let Err(e) = tx.commit().await {
+        eprintln!("Could not commit test message: {e}");
+        return 4;
+    }
     out(&json!({
         "mode": mode,
         "from": from,
         "to": to,
         "dkim": cfg.dkim.as_ref().map(|d| json!({"d": d.domain(), "s": d.selector()})),
-        "classification": r.kind(),
-        "error_code": code,
-        "receipt": r.receipt(),
+        "classification": "queued",
+        "notification_id": notification_id,
     }));
-    if code.is_none() {
-        0
-    } else {
-        4
-    }
+    0
 }

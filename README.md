@@ -73,9 +73,11 @@ Each send carries a single recipient, so there is always exactly one RCPT domain
 | Variable | Default | Meaning |
 | -------- | ------- | ------- |
 | `SMTP_DELIVERY_MODE` | `relay` | `relay` or `direct` (direct is rejected with `DEMO_MODE=true`) |
-| `SMTP_HELO_NAME` | `raxo-email.local` (relay) | EHLO name, a FQDN; **required** in direct mode, should match the PTR (`mail.btctoons.com`) |
+| `SMTP_HELO_NAME` | `raxo-email.local` (relay) | EHLO name, a FQDN; **required** in direct mode, should match the sending IP's PTR |
 | `SMTP_DIRECT_PORT` | `25` | Destination port for direct MX delivery (override only for tests) |
 | `SMTP_DIRECT_IPV4_ONLY` | `true` | Only connect to IPv4 addresses of MX hosts (`false` tries IPv4 first, then IPv6) |
+| `SMTP_NODE_ID` | `local` outside production | Stable sending-node ID; **required** in production |
+| `SMTP_WORKER_CONCURRENCY` | `3` | Maximum processing tasks per worker process (1–64); the node connection limit still applies |
 | `DKIM_DOMAIN` | – | Signing domain (`d=`) |
 | `DKIM_SELECTOR` | – | Selector (`s=`); the key is published at `<selector>._domainkey.<domain>` |
 | `DKIM_PRIVATE_KEY_PATH` | – | RSA private key, PEM PKCS#8 or PKCS#1, ≥ 1024 bits (2048 recommended) |
@@ -84,21 +86,65 @@ The three `DKIM_*` variables must be set together or not at all. When they are s
 test-signed at startup, and an invalid key aborts startup. Key material is never logged.
 `SMTP_HOST`, `SMTP_PORT`, `SMTP_TLS_MODE`, `SMTP_USERNAME` and `SMTP_PASSWORD` apply only to relay mode.
 
+### Capacity and queue
+
+Form notifications, activation messages and operator test messages all use the durable queue.
+Each sending node defaults to **15 SMTP attempts per minute** and **3 concurrent SMTP
+connections**; the default limit for a recipient email is 15 attempts per minute across nodes.
+Every attempt, including a retry, consumes capacity. In-flight attempts count until they
+finish and completed attempts count for another 60 seconds. Recipient email grouping is
+not an authenticated tenant identity: aliases can bypass that grouping, but not the node cap.
+
+All worker processes sending from one node must use the same PostgreSQL database,
+`SMTP_NODE_ID` and storage/lock directory. Give different sending nodes different IDs.
+Do not delete, copy or replace a node's `smtp-capacity` lock directory while workers are
+running. A moved or restored lock directory requires a planned rebind with all workers
+stopped. Other mail programs and older Raxo releases do not obey these limits.
+
+Workers schedule recipient groups fairly. A temporary failure backs off the destination
+domain on that node (initially 1 minute, then 5 minutes, 30 minutes and 2 hours) without
+blocking unrelated domains. Safe failures are retried up to five total attempts; an
+ambiguous post-DATA outcome or an expired submitting lease becomes `unknown` and is
+never retried automatically. Inspect it before taking any manual action. Queued activation
+messages expire with their verification token, and their private MIME files are removed
+after terminal outcomes or by the retention sweep.
+
+Run these commands with the service's normal environment and database access:
+
+```sh
+raxo-cli capacity node --node contabo-1 --provider contabo --per-minute 15 --connections 3
+raxo-cli capacity default --per-minute 15
+raxo-cli capacity recipient --email owner@example.org --per-minute 5
+raxo-cli capacity recipient --email owner@example.org --per-minute default
+raxo-cli capacity stats --node contabo-1
+```
+
+`stats` reports node policy, recent attempts by outcome, queue states and active
+destination backoffs. It is an operator command, not a public endpoint.
+
+**Rollback:** migration `006_outbound_capacity` is additive, but the older worker and API
+do not enforce capacity and send activation messages directly. Stop all workers before
+switching releases; do not run old and new workers concurrently. If rolling back, arrange
+separate outbound throttling or disable sending until the new release is restored.
+
 ### CLI
 
 ```sh
 # generate an RSA-2048 key (PKCS#8 PEM, mode 0600, never overwrites) and print the DNS TXT record
-raxo-cli dkim generate --domain btctoons.com --selector raxo1 --out /etc/raxo/dkim/raxo1.pem
-#   Name:  raxo1._domainkey.btctoons.com
+raxo-cli dkim generate --domain raxo.email --selector raxo1 --out /etc/raxo/dkim/raxo1.pem
+#   Name:  raxo1._domainkey.raxo.email
 #   Value: v=DKIM1; k=rsa; p=MIIBIjANBg...
 # compare the configured key with the published TXT record (exit 0 match, 3 mismatch/not published, 4 DNS error)
 raxo-cli dkim check
-# send a DKIM-signed system message through the configured delivery mode, print classification + receipt
-raxo-cli send-test --to you@example.org [--from notifications@btctoons.com]
+# queue a real test message and inspect its notification ID for the eventual outcome
+raxo-cli send-test --to you@example.org --from notifications@raxo.email
+raxo-cli notifications show <notification-id>
 ```
 
-`dkim check` and `send-test` read the normal configuration from the environment (`DATABASE_URL` must be
-set but no database connection is made). `send-test` sends real mail in direct mode.
+`dkim check` reads the normal configuration but does not connect to the database. `send-test`
+requires database and storage access, returns `queued` rather than a delivery receipt, and
+requires a running worker. A successful SMTP receipt means the destination accepted the
+message; it does not prove inbox placement or recipient-side authentication.
 
 ### Production environment (`.env.production.example`)
 
@@ -109,20 +155,22 @@ PORT=3000
 DATABASE_URL=postgres://raxo:CHANGE_ME@127.0.0.1:5432/raxo
 FORMS_CONFIG_PATH=/etc/raxo/forms.json
 STORAGE_DIR=/var/lib/raxo/data
-MESSAGE_ID_DOMAIN=btctoons.com
+MESSAGE_ID_DOMAIN=raxo.email
 CAPTCHA_SECRET=CHANGE_ME
 IP_HASH_SECRET=CHANGE_ME_LONG_RANDOM
 TRUSTED_PROXY_CIDRS=127.0.0.1/32
 OUTBOUND_ENABLED=true
 
-# direct delivery from 84.247.138.34 (PTR mail.btctoons.com), no relay
+# direct delivery, no relay; forward and reverse DNS must agree
 SMTP_DELIVERY_MODE=direct
-SMTP_HELO_NAME=mail.btctoons.com
+SMTP_HELO_NAME=mail.raxo.email
 SMTP_DIRECT_PORT=25
 SMTP_DIRECT_IPV4_ONLY=true
 SMTP_MAX_MESSAGE_BYTES=20971520
+SMTP_NODE_ID=contabo-1
+SMTP_WORKER_CONCURRENCY=3
 
-DKIM_DOMAIN=btctoons.com
+DKIM_DOMAIN=raxo.email
 DKIM_SELECTOR=raxo1
 DKIM_PRIVATE_KEY_PATH=/etc/raxo/dkim/raxo1.pem
 
@@ -145,7 +193,7 @@ The DNS side is outside this service. Publish:
 - the DKIM TXT record;
 - SPF: `v=spf1 ip4:84.247.138.34 -all` on the From domain;
 - DMARC: `_dmarc` with at least `p=none` initially;
-- matching forward DNS for `mail.btctoons.com`.
+- matching forward and provider-controlled reverse DNS for `mail.raxo.email`.
 
 Outbound TCP/25 must be open at the VPS provider.
 
@@ -156,7 +204,7 @@ cargo build --release
 # tests need a throw-away PostgreSQL (they fail, not skip, if it is unreachable)
 docker run -d --name raxo_rust_testpg -p 127.0.0.1:55432:5432 --tmpfs /var/lib/postgresql/data \
   -e POSTGRES_USER=test -e POSTGRES_PASSWORD=testpw postgres:16
-cargo test        # 12 unit + 14 attachment-policy + 10 direct-delivery + 2 migration tests
+cargo test
 cargo clippy --all-targets -- -D warnings && cargo fmt --check
 ```
 
@@ -180,18 +228,17 @@ rejected at upload (PDF only), so ordinary EICAR ZIPs were checked directly agai
 - The API caps in-flight submissions at 2 and answers 503 beyond that (20 of 40 burst requests were rejected in staging).
 - Inbound / signed-message handling (`inbound.rs`) is groundwork only: detection and secure original
   storage exist, there is no inbound SMTP listener.
-- Staging runs used `DEMO_MODE=true`, loopback API and Mailpit; production SMTP routing was not touched.
 - Not performed: a Node-vs-Rust comparison (dropped at the project owner's direction) and any performance
   benchmark. No performance claim is made.
-- Not run: tests on the production host; CI on GitHub.
 - Sentinel binary/database are obtained from the private sentinel repository at a pinned commit
   (see `deploy/sentinel`); a fresh clone needs read access to it.
-- Direct delivery and DKIM were verified only against local fake SMTP servers, an injected resolver and
-  in-memory DKIM verification. No real mail was sent to the internet, and deliverability to large
-  providers (Gmail, Outlook) was not measured. `raxo-cli send-test` is the first live check.
+- Automated direct-delivery and DKIM tests use local fake SMTP servers, an injected resolver and
+  in-memory signature verification. Live deliverability and inbox placement must be checked separately.
 - Opportunistic TLS accepts unverified certificates by design (like Postfix `may`), so there is no
-  MTA-STS or DANE enforcement. Retries after `SafeRetry` follow the existing queue backoff. There is no
-  per-domain connection reuse or rate limiting.
+  MTA-STS or DANE enforcement. There is no per-domain connection reuse.
+- The public embedded-form route `/f/{form_id}` does not verify Turnstile, unlike `/forms/{form_id}`.
+  Plan additional abuse controls before relying on it for untrusted traffic. The outbound queue can
+  grow without bound if arrivals exceed sending capacity; monitor it and provision accordingly.
 - DKIM signing uses the `rsa` 0.9 crate, which is affected by RUSTSEC-2023-0071 (Marvin timing
   side-channel). Signing happens locally with no attacker-observable decryption oracle, so the
   practical risk is low.

@@ -1,4 +1,5 @@
 use raxo_email::{
+    capacity::Capacity,
     config::load_config_from_env,
     db,
     queue::QueueDeps,
@@ -24,10 +25,12 @@ async fn run() -> Result<(), String> {
     let sentinel = Sentinel::new(&cfg, storage.snapshot_dir().map_err(|e| e.message)?);
     sentinel.init_snapshot_dir().map_err(|e| e.to_string())?;
     log_delivery_config(&cfg);
+    let capacity = Capacity::initialize(&pool, storage.root(), &cfg.smtp_node_id).await.map_err(|e| e.message)?;
     let deps = QueueDeps {
         pool: pool.clone(),
         storage,
         smtp: SmtpConfig::from_app(&cfg),
+        capacity,
         sentinel,
         max_mime_bytes: cfg.smtp_max_message_bytes as usize,
         outbound_enabled: cfg.outbound_enabled,
@@ -35,7 +38,9 @@ async fn run() -> Result<(), String> {
         scan_retries: cfg.attachment_scan_retries,
         notice_html: cfg.attachment_notice_html,
     };
-    let worker = Worker::new(deps, WorkerOptions::new(cfg.database_url.clone()));
+    let mut options = WorkerOptions::new(cfg.database_url.clone());
+    options.concurrency = cfg.smtp_worker_concurrency;
+    let worker = Worker::new(deps, options);
     let (tx, rx) = tokio::sync::watch::channel(false);
     tokio::spawn(async move {
         use tokio::signal::unix::{signal, SignalKind};

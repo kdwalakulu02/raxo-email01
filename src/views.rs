@@ -44,12 +44,14 @@ fn page(title: &str, body: &str) -> String {
 pub struct GeneratorState<'a> {
     pub form_id: Option<&'a str>,
     pub email: Option<&'a str>,
+    pub management_token: Option<&'a str>,
     pub error: Option<&'a str>,
 }
 
 pub fn render_generator_page(base_url: &str, state: Option<GeneratorState>) -> String {
     let form_id = state.as_ref().and_then(|s| s.form_id).unwrap_or("");
     let email = state.as_ref().and_then(|s| s.email).map(escape_html).unwrap_or_default();
+    let management_token = state.as_ref().and_then(|s| s.management_token).map(escape_html).unwrap_or_default();
     let error = state.as_ref().and_then(|s| s.error).map(escape_html).unwrap_or_default();
     let snippet = if form_id.is_empty() { String::new() } else { generate_html_snippet(base_url, form_id) };
     let err_html = if error.is_empty() { String::new() } else { format!("<div class=\"alert-error\">{error}</div>") };
@@ -66,8 +68,9 @@ pub fn render_generator_page(base_url: &str, state: Option<GeneratorState>) -> S
       <button type="submit" id="submit-btn" class="btn-primary">Generate Form ID</button>
     </form>
     <div id="result-container" style="display:{display};margin-top:1.5rem">
-      <div class="notice"><strong>Activation Email Sent!</strong> We sent a single-use activation link to your email address. Click it once to activate delivery. Submissions sent while pending are held safely in your durable queue and will be delivered upon activation.</div>
+      <div class="notice"><strong>Activation Email Queued</strong> A single-use activation link is queued for delivery to your email address. Click it once to activate delivery. Submissions sent while pending are held safely in your durable queue and will be delivered upon activation.</div>
       <p><span id="display-form-id">Form ID: {form_id}</span></p>
+      <p>Save your management key to deactivate this form later: <code id="management-token">{management_token}</code></p>
       <pre id="snippet-code"><code>{snippet_esc}</code></pre>
       <p class="privacy-notice">Privacy Guarantee: Your receiving email address never appears in the HTML. Form IDs are public identifiers, not authentication tokens.</p>
     </div>
@@ -85,6 +88,7 @@ form.addEventListener("submit",async(e)=>{{
     const data=await res.json();
     if(!res.ok){{alert((data.error&&data.error.message)||"Failed to generate Form ID");return;}}
     document.getElementById("display-form-id").innerText="Form ID: "+data.form_id;
+    document.getElementById("management-token").textContent=data.management_token;
     const code=document.createElement("code");code.textContent=data.html_snippet;
     const pre=document.getElementById("snippet-code");pre.replaceChildren(code);
     document.getElementById("result-container").style.display="block";

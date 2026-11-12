@@ -3,6 +3,7 @@
 //! Requires a reachable Postgres (TEST_DATABASE_URL, default below). Tests fail, not skip,
 //! when it is unavailable.
 
+use raxo_email::capacity::Capacity;
 use raxo_email::config::{AttachmentPolicy, FormConfig, FormField, FormFieldType, SmtpTlsMode};
 use raxo_email::queue::{claim_due_notification, process_notification, ProcessResult, QueueDeps};
 use raxo_email::sentinel::Sentinel;
@@ -52,12 +53,22 @@ pub enum SmtpMode {
     Accept,
     /// Reply 451 to DATA for the first n messages, then accept.
     TempFailFirst(usize),
+    SlowAccept(u64),
 }
 
 pub struct FakeSmtp {
     pub port: u16,
     pub messages: Arc<Mutex<Vec<Vec<u8>>>>,
     pub attempts: Arc<AtomicUsize>,
+    pub peak_connections: Arc<AtomicUsize>,
+}
+
+struct ActiveConnection(Arc<AtomicUsize>);
+
+impl Drop for ActiveConnection {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 pub async fn start_smtp(mode: SmtpMode) -> FakeSmtp {
@@ -65,12 +76,18 @@ pub async fn start_smtp(mode: SmtpMode) -> FakeSmtp {
     let port = l.local_addr().unwrap().port();
     let messages = Arc::new(Mutex::new(vec![]));
     let attempts = Arc::new(AtomicUsize::new(0));
-    let (m2, a2) = (messages.clone(), attempts.clone());
+    let active = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let (m2, a2, active2, peak2) = (messages.clone(), attempts.clone(), active.clone(), peak.clone());
     tokio::spawn(async move {
         loop {
             let Ok((s, _)) = l.accept().await else { return };
+            let current = active2.fetch_add(1, Ordering::SeqCst) + 1;
+            peak2.fetch_max(current, Ordering::SeqCst);
+            let guard = ActiveConnection(active2.clone());
             let (m, a) = (m2.clone(), a2.clone());
             tokio::spawn(async move {
+                let _guard = guard;
                 let (rd, mut wr) = s.into_split();
                 let mut rd = BufReader::new(rd);
                 let _ = wr.write_all(b"220 fake ESMTP\r\n").await;
@@ -107,6 +124,9 @@ pub async fn start_smtp(mode: SmtpMode) -> FakeSmtp {
                             data.extend_from_slice(l2.as_bytes());
                         }
                         m.lock().unwrap().push(data);
+                        if let SmtpMode::SlowAccept(ms) = mode {
+                            tokio::time::sleep(Duration::from_millis(ms)).await;
+                        }
                         let _ = wr.write_all(b"250 2.0.0 queued as FAKE1\r\n").await;
                     } else if up == "QUIT" {
                         let _ = wr.write_all(b"221 bye\r\n").await;
@@ -118,7 +138,7 @@ pub async fn start_smtp(mode: SmtpMode) -> FakeSmtp {
             });
         }
     });
-    FakeSmtp { port, messages, attempts }
+    FakeSmtp { port, messages, attempts, peak_connections: peak }
 }
 
 // ---------------- fake Sentinel coordinator ----------------
@@ -130,6 +150,7 @@ pub struct FakeSentinel {
     pub socket: PathBuf,
     pub scans: Arc<AtomicUsize>,
     pub stop: Arc<AtomicBool>,
+    pub release_scan: Arc<AtomicBool>,
 }
 
 fn recv_fd_request(stream: &std::os::unix::net::UnixStream) -> Option<std::fs::File> {
@@ -164,7 +185,8 @@ pub fn start_sentinel(dir: &Path) -> FakeSentinel {
     let l = UnixListener::bind(&socket).unwrap();
     let scans = Arc::new(AtomicUsize::new(0));
     let stop = Arc::new(AtomicBool::new(false));
-    let (s2, st2) = (scans.clone(), stop.clone());
+    let release_scan = Arc::new(AtomicBool::new(false));
+    let (s2, st2, release2) = (scans.clone(), stop.clone(), release_scan.clone());
     std::thread::spawn(move || {
         for conn in l.incoming() {
             if st2.load(Ordering::SeqCst) {
@@ -172,6 +194,7 @@ pub fn start_sentinel(dir: &Path) -> FakeSentinel {
             }
             let Ok(stream) = conn else { continue };
             let s3 = s2.clone();
+            let release3 = release2.clone();
             std::thread::spawn(move || {
                 let Some(mut f) = recv_fd_request(&stream) else { return };
                 s3.fetch_add(1, Ordering::SeqCst);
@@ -181,6 +204,15 @@ pub fn start_sentinel(dir: &Path) -> FakeSentinel {
                 if has(b"HANG") {
                     std::thread::sleep(Duration::from_secs(30));
                     return;
+                }
+                if has(b"WAIT_SCAN") {
+                    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+                    while !release3.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    if !release3.load(Ordering::SeqCst) {
+                        return;
+                    }
                 }
                 let (status, threats, err) = if has(b"EICAR") || has(b"MALWARE") {
                     ("DETECTED", vec![serde_json::json!({"name": "Test.Signature.Fake"})], None)
@@ -207,7 +239,7 @@ pub fn start_sentinel(dir: &Path) -> FakeSentinel {
             });
         }
     });
-    FakeSentinel { socket, scans, stop }
+    FakeSentinel { socket, scans, stop, release_scan }
 }
 
 // ---------------- fixtures ----------------
@@ -255,6 +287,7 @@ pub async fn env(o: EnvOpts) -> Env {
         Sentinel::with_params(sock, Duration::from_millis(o.sentinel_timeout_ms), storage.snapshot_dir().unwrap(), 4);
     client.init_snapshot_dir().unwrap();
     let smtp = start_smtp(o.smtp).await;
+    let capacity = Capacity::initialize(&pool, storage.root(), "test-node").await.unwrap();
     let deps = QueueDeps {
         pool: pool.clone(),
         storage: storage.clone(),
@@ -265,6 +298,7 @@ pub async fn env(o: EnvOpts) -> Env {
             timeout: Duration::from_secs(5),
             ..Default::default()
         },
+        capacity,
         sentinel: client,
         max_mime_bytes: 10 * 1024 * 1024,
         outbound_enabled: true,
@@ -342,7 +376,7 @@ pub async fn seed(e: &Env, message: &str, files: &[(&str, &[u8])]) -> Seeded {
 
 /// Claims and processes the next due notification once.
 pub async fn run_once(e: &Env) -> Option<ProcessResult> {
-    let (n, token) = claim_due_notification(&e.pool, 120).await.unwrap()?;
+    let (n, token) = claim_due_notification(&e.pool, &e.deps.capacity, 120).await.unwrap()?;
     Some(process_notification(&n, token, &e.deps, &|| true).await.unwrap())
 }
 
@@ -352,6 +386,18 @@ pub async fn make_due(e: &Env, id: Uuid) {
         .execute(&e.pool)
         .await
         .unwrap();
+    sqlx::query(
+        "UPDATE smtp_destination_backoff SET not_before = now() - interval '1 second'
+         WHERE node_id = $1 AND destination_domain = (
+           SELECT split_part(lower(s.config_snapshot->>'recipient'), '@', 2)
+           FROM notifications n JOIN submissions s ON s.id = n.submission_id WHERE n.id = $2
+         )",
+    )
+    .bind(&e.deps.capacity.node_id)
+    .bind(id)
+    .execute(&e.pool)
+    .await
+    .unwrap();
 }
 
 pub async fn notif_state(e: &Env, id: Uuid) -> String {

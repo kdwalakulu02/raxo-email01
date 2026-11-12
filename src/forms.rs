@@ -4,7 +4,7 @@ use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
-use sqlx::{FromRow, PgPool};
+use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
@@ -75,8 +75,18 @@ pub struct CreateFormResult {
 }
 
 pub async fn create_dynamic_form(pool: &PgPool, raw_email: Option<&str>) -> Result<CreateFormResult> {
+    let mut tx = pool.begin().await?;
+    let created = create_dynamic_form_in_tx(&mut tx, raw_email).await?;
+    tx.commit().await?;
+    Ok(created)
+}
+
+pub async fn create_dynamic_form_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    raw_email: Option<&str>,
+) -> Result<CreateFormResult> {
     let email = validate_recipient_email(raw_email)?;
-    for attempt in 0..3 {
+    for _ in 0..3 {
         let form_id = generate_form_id();
         let (vtok, vhash) = generate_token();
         let (mtok, mhash) = generate_token();
@@ -84,7 +94,8 @@ pub async fn create_dynamic_form(pool: &PgPool, raw_email: Option<&str>) -> Resu
         let res = sqlx::query_as::<_, RegisteredForm>(&format!(
             "INSERT INTO registered_forms (id, public_id, recipient_email, status, verification_token_hash,
                verification_expires_at, management_token_hash, resend_count, last_verification_sent_at, created_at)
-             VALUES ($1, $2, $3, 'pending_verification', $4, $5, $6, 0, now(), now()) RETURNING {COLS}"
+             VALUES ($1, $2, $3, 'pending_verification', $4, $5, $6, 0, now(), now())
+             ON CONFLICT DO NOTHING RETURNING {COLS}"
         ))
         .bind(Uuid::new_v4())
         .bind(&form_id)
@@ -92,14 +103,10 @@ pub async fn create_dynamic_form(pool: &PgPool, raw_email: Option<&str>) -> Resu
         .bind(&vhash)
         .bind(expires)
         .bind(&mhash)
-        .fetch_one(pool)
-        .await;
-        match res {
-            Ok(form) => {
-                return Ok(CreateFormResult { form, form_id, verification_token: vtok, management_token: mtok })
-            }
-            Err(sqlx::Error::Database(d)) if d.code().as_deref() == Some("23505") && attempt < 2 => continue,
-            Err(e) => return Err(e.into()),
+        .fetch_optional(&mut **tx)
+        .await?;
+        if let Some(form) = res {
+            return Ok(CreateFormResult { form, form_id, verification_token: vtok, management_token: mtok });
         }
     }
     Err(AppError::new("service_unavailable", 500, "Failed to generate unique Form ID after maximum retries"))
@@ -152,6 +159,14 @@ pub async fn verify_dynamic_form(pool: &PgPool, token: &str) -> Result<VerifyRes
     .execute(&mut *tx)
     .await?
     .rows_affected();
+    sqlx::query(
+        "UPDATE notifications n SET state = 'cancelled', lease_token = NULL, lease_expires_at = NULL, updated_at = now()
+         FROM submissions s WHERE n.submission_id = s.id AND s.form_id = $1 AND s.kind = 'system'
+           AND n.state IN ('queued', 'retry_wait', 'preparing')",
+    )
+    .bind(&form.public_id)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(VerifyResult { form: updated, promoted })
 }
@@ -178,9 +193,9 @@ pub async fn deactivate_dynamic_form(pool: &PgPool, public_id: &str, token: Opti
         .execute(&mut *tx)
         .await?;
     sqlx::query(
-        "UPDATE notifications SET state = 'cancelled', updated_at = now()
+        "UPDATE notifications SET state = 'cancelled', lease_token = NULL, lease_expires_at = NULL, updated_at = now()
          FROM submissions s WHERE notifications.submission_id = s.id AND s.form_id = $1
-           AND notifications.state IN ('queued', 'retry_wait', 'held_unverified')",
+           AND notifications.state IN ('queued', 'retry_wait', 'held_unverified', 'preparing')",
     )
     .bind(public_id)
     .execute(&mut *tx)
@@ -191,11 +206,20 @@ pub async fn deactivate_dynamic_form(pool: &PgPool, public_id: &str, token: Opti
 
 pub async fn resend_verification(pool: &PgPool, public_id: &str) -> Result<(RegisteredForm, String)> {
     let mut tx = pool.begin().await?;
+    let result = resend_verification_in_tx(&mut tx, public_id).await?;
+    tx.commit().await?;
+    Ok(result)
+}
+
+pub async fn resend_verification_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    public_id: &str,
+) -> Result<(RegisteredForm, String)> {
     let form = sqlx::query_as::<_, RegisteredForm>(&format!(
         "SELECT {COLS} FROM registered_forms WHERE public_id = $1 FOR UPDATE"
     ))
     .bind(public_id)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?
     .ok_or_else(|| AppError::not_found("Form not found"))?;
     if form.status == "active" {
@@ -214,6 +238,28 @@ pub async fn resend_verification(pool: &PgPool, public_id: &str) -> Result<(Regi
     if form.resend_count >= 5 {
         return Err(AppError::rate_limited("Maximum verification resend limit reached for this form"));
     }
+    sqlx::query(
+        "UPDATE notifications n SET state = 'cancelled', lease_token = NULL, lease_expires_at = NULL, updated_at = now()
+         FROM submissions s WHERE n.submission_id = s.id AND s.form_id = $1 AND s.kind = 'system'
+           AND n.state IN ('queued', 'retry_wait', 'preparing') AND n.not_after <= clock_timestamp()",
+    )
+    .bind(public_id)
+    .execute(&mut **tx)
+    .await?;
+    let pending: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+           SELECT 1 FROM notifications n JOIN submissions s ON s.id = n.submission_id
+           WHERE s.form_id = $1 AND s.kind = 'system'
+             AND n.state IN ('queued', 'retry_wait', 'preparing', 'submitting')
+             AND (n.not_after IS NULL OR n.not_after > clock_timestamp())
+         )",
+    )
+    .bind(public_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if pending {
+        return Err(AppError::rate_limited("An activation email is already queued or being sent. Please wait."));
+    }
     let (tok, hash) = generate_token();
     let updated = sqlx::query_as::<_, RegisteredForm>(&format!(
         "UPDATE registered_forms SET verification_token_hash = $1, verification_expires_at = $2,
@@ -222,9 +268,8 @@ pub async fn resend_verification(pool: &PgPool, public_id: &str) -> Result<(Regi
     .bind(&hash)
     .bind(Utc::now() + Duration::hours(24))
     .bind(form.id)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut **tx)
     .await?;
-    tx.commit().await?;
     Ok((updated, tok))
 }
 

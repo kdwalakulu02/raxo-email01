@@ -929,20 +929,6 @@ pub async fn submit_raw(raw: &[u8], from: &str, to: &str, cfg: &SmtpConfig) -> S
     }
 }
 
-pub async fn send_system_message(
-    to: &str,
-    subject: &str,
-    text: &str,
-    html: &str,
-    cfg: &SmtpConfig,
-    from: &str,
-    message_id_domain: &str,
-) -> SubmitResult {
-    let mid = format!("<{}@{}>", uuid::Uuid::new_v4(), message_id_domain);
-    let raw = crate::mime::build_system_message(from, to, subject, text, html, &mid);
-    submit_raw(&raw, from, to, cfg).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

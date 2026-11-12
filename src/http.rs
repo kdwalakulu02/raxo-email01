@@ -3,17 +3,17 @@ use crate::captcha::{verify_captcha, CaptchaOptions, TURNSTILE_ENDPOINT};
 use crate::config::{AppConfig, FormConfig, FormField, FormFieldType};
 use crate::errors::{AppError, Result};
 use crate::forms::{
-    create_dynamic_form, deactivate_dynamic_form, generate_html_snippet, get_dynamic_form_by_public_id,
-    resend_verification, verify_dynamic_form,
+    create_dynamic_form_in_tx, deactivate_dynamic_form, generate_html_snippet, get_dynamic_form_by_public_id,
+    resend_verification_in_tx, verify_dynamic_form,
 };
 use crate::input::{parse_submission, ParsedInput};
+use crate::outbox::{enqueue_system_message, SystemMessage};
 use crate::ratelimit::{
     compute_ip_hash, consume_deactivation_rate_limit, consume_global_rate_limit, consume_rate_limit,
     consume_recipient_registration_rate_limit, consume_registration_rate_limit,
 };
 use crate::repo::get_worker_heartbeat;
 use crate::sentinel::Sentinel;
-use crate::smtp::{send_system_message, SmtpConfig, SubmitResult};
 use crate::storage::Storage;
 use crate::views::{
     render_error_page, render_generator_page, render_receipt_page, render_test_page, render_verification_page,
@@ -46,7 +46,6 @@ pub struct AppState {
     pub pool: PgPool,
     pub storage: Storage,
     pub sentinel: Sentinel,
-    pub smtp: SmtpConfig,
     in_flight: AtomicUsize,
 }
 
@@ -54,8 +53,7 @@ pub type Shared = Arc<AppState>;
 
 impl AppState {
     pub fn new(config: AppConfig, pool: PgPool, storage: Storage, sentinel: Sentinel) -> Shared {
-        let smtp = SmtpConfig::from_app(&config);
-        Arc::new(Self { config, pool, storage, sentinel, smtp, in_flight: AtomicUsize::new(0) })
+        Arc::new(Self { config, pool, storage, sentinel, in_flight: AtomicUsize::new(0) })
     }
 }
 
@@ -292,6 +290,9 @@ async fn index(State(s): State<Shared>, headers: HeaderMap) -> Response {
 }
 
 async fn test_page(State(s): State<Shared>, headers: HeaderMap) -> Response {
+    if s.config.node_env == "production" {
+        return not_found().await;
+    }
     let site_key = std::env::var("CAPTCHA_SITEKEY").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
     html_resp(
         200,
@@ -385,13 +386,6 @@ fn str_field(m: &HashMap<String, Value>, k: &str) -> Option<String> {
 
 // ---------- registration ----------
 
-fn system_smtp_failure(r: &SubmitResult) -> Option<String> {
-    match r {
-        SubmitResult::Submitted { .. } => None,
-        SubmitResult::SafeRetry(c) | SubmitResult::Failed(c) | SubmitResult::Unknown(c) => Some(c.clone()),
-    }
-}
-
 async fn register_form(
     State(s): State<Shared>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -405,7 +399,8 @@ async fn register_form(
     if let Some(e) = email.as_deref().filter(|e| !e.is_empty()) {
         consume_recipient_registration_rate_limit(&s.pool, e, Utc::now()).await?;
     }
-    let created = create_dynamic_form(&s.pool, email.as_deref()).await?;
+    let mut tx = s.pool.begin().await?;
+    let created = create_dynamic_form_in_tx(&mut tx, email.as_deref()).await?;
     let base = base_url(&headers, cfg);
     let form_id = &created.form_id;
     let activation = format!("{base}/verify?token={}", created.verification_token);
@@ -418,19 +413,23 @@ async fn register_form(
         "<p>Hello,</p><p>You requested a new Raxo Email form endpoint.</p><p><strong>Form ID:</strong> <code>{form_id}</code><br><strong>Action URL:</strong> <code>{base}/f/{form_id}</code></p><p><a href=\"{activation}\" style=\"display:inline-block;padding:10px 20px;background:#4f46e5;color:white;text-decoration:none;border-radius:5px;font-weight:bold;\">Activate Form</a></p><p>Or copy this activation link:<br><a href=\"{activation}\">{activation}</a></p><p><small>This activation link expires in 24 hours. Submissions sent before activation are held safely and delivered upon verification.<br>Management Key: <code>{}</code></small></p>",
         created.management_token
     );
-    let r = send_system_message(
-        &created.form.recipient_email,
-        &subject,
-        &text,
-        &html,
-        &s.smtp,
-        &format!("notifications@{}", cfg.message_id_domain),
-        &cfg.message_id_domain,
+    let from = format!("notifications@{}", cfg.message_id_domain);
+    enqueue_system_message(
+        &mut tx,
+        &s.storage,
+        &SystemMessage {
+            form_id,
+            from: &from,
+            to: &created.form.recipient_email,
+            subject: &subject,
+            text: &text,
+            html: &html,
+            message_id_domain: &cfg.message_id_domain,
+            not_after: created.form.verification_expires_at,
+        },
     )
-    .await;
-    if let Some(code) = system_smtp_failure(&r) {
-        tracing::warn!(code, "could not dispatch activation email directly");
-    }
+    .await?;
+    tx.commit().await?;
 
     let accept = header_str(&headers, "accept");
     if !accept.contains("application/json") && accept.contains("text/html") {
@@ -441,6 +440,7 @@ async fn register_form(
                 Some(GeneratorState {
                     form_id: Some(form_id),
                     email: Some(&created.form.recipient_email),
+                    management_token: Some(&created.management_token),
                     error: None,
                 }),
             ),
@@ -454,7 +454,7 @@ async fn register_form(
             "action_url": format!("{base}/f/{form_id}"),
             "html_snippet": generate_html_snippet(&base, form_id),
             "management_token": created.management_token,
-            "message": "Form created successfully. An activation link has been sent to your email address.",
+            "message": "Form created successfully. An activation email has been queued for delivery.",
         }),
     ))
 }
@@ -539,26 +539,31 @@ async fn verify_post(
 }
 
 async fn resend(State(s): State<Shared>, Path(form_id): Path<String>, headers: HeaderMap) -> Result<Response> {
-    let (form, token) = resend_verification(&s.pool, &form_id).await?;
+    let mut tx = s.pool.begin().await?;
+    let (form, token) = resend_verification_in_tx(&mut tx, &form_id).await?;
     let base = base_url(&headers, &s.config);
     let activation = format!("{base}/verify?token={token}");
     let subject = format!("Activate your Raxo Email form ({}...)", &form_id[..8.min(form_id.len())]);
     let text = format!("Hello,\n\nHere is your new activation link for Form ID {form_id}:\n{activation}\n\nThis activation link expires in 24 hours.\n");
     let html = format!("<p>Hello,</p><p>Here is your new activation link for Form ID <code>{form_id}</code>:</p><p><a href=\"{activation}\">Activate Form</a></p>");
-    let r = send_system_message(
-        &form.recipient_email,
-        &subject,
-        &text,
-        &html,
-        &s.smtp,
-        &format!("notifications@{}", s.config.message_id_domain),
-        &s.config.message_id_domain,
+    let from = format!("notifications@{}", s.config.message_id_domain);
+    enqueue_system_message(
+        &mut tx,
+        &s.storage,
+        &SystemMessage {
+            form_id: &form_id,
+            from: &from,
+            to: &form.recipient_email,
+            subject: &subject,
+            text: &text,
+            html: &html,
+            message_id_domain: &s.config.message_id_domain,
+            not_after: form.verification_expires_at,
+        },
     )
-    .await;
-    if system_smtp_failure(&r).is_some() {
-        return Err(AppError::internal());
-    }
-    Ok(json_resp(200, json!({"status":"ok","message":"A new activation email has been sent."})))
+    .await?;
+    tx.commit().await?;
+    Ok(json_resp(200, json!({"status":"ok","message":"A new activation email has been queued for delivery."})))
 }
 
 async fn deactivate(

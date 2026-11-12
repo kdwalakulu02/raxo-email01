@@ -42,6 +42,45 @@ async fn one_clean_attachment_is_delivered_without_notice() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn file_promoted_before_a_failed_commit_is_rescanned() {
+    for (content, verdict, included) in [(CLEAN, "CLEAN", true), (EICAR_PDF, "DETECTED", false)] {
+        let e = env(EnvOpts::default()).await;
+        let s = seed(&e, "recovery", &[("report.pdf", content)]).await;
+        let key: String = sqlx::query_scalar("SELECT storage_key FROM attachments WHERE submission_id = $1")
+            .bind(s.submission_id)
+            .fetch_one(&e.pool)
+            .await
+            .unwrap();
+        e.storage.move_to_clean(&key).unwrap();
+        assert_eq!(run_once(&e).await.unwrap().outcome.as_deref(), Some("submitted"));
+        assert_eq!(verdicts(&e, s.submission_id).await, vec![("report.pdf".to_string(), verdict.to_string())]);
+        let msg = only_message(&e);
+        assert_eq!(!attached_filenames(&msg).is_empty(), included);
+        if !included {
+            assert_not_leaked(&msg, content);
+            assert!(e.storage.exists(&key, Some(raxo_email::storage::Area::Quarantine)));
+            assert!(!e.storage.exists(&key, Some(raxo_email::storage::Area::Clean)));
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn quarantined_file_with_clean_database_state_is_rescanned() {
+    let e = env(EnvOpts::default()).await;
+    let s = seed(&e, "recovery", &[("report.pdf", EICAR_PDF)]).await;
+    sqlx::query("UPDATE attachments SET scan_state = 'clean', scanned_at = now() WHERE submission_id = $1")
+        .bind(s.submission_id)
+        .execute(&e.pool)
+        .await
+        .unwrap();
+    assert_eq!(run_once(&e).await.unwrap().outcome.as_deref(), Some("submitted"));
+    assert_eq!(verdicts(&e, s.submission_id).await, vec![("report.pdf".to_string(), "DETECTED".to_string())]);
+    let msg = only_message(&e);
+    assert!(attached_filenames(&msg).is_empty());
+    assert_not_leaked(&msg, EICAR_PDF);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn one_suspicious_attachment_is_withheld_and_email_still_delivered() {
     let e = env(EnvOpts::default()).await;
     let s = seed(&e, "please review", &[("invoice.pdf", EICAR_PDF)]).await;

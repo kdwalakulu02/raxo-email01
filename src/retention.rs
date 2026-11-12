@@ -17,6 +17,7 @@ pub struct RetentionResult {
 
 pub async fn run_retention(pool: &PgPool, storage: &Storage, reference: DateTime<Utc>) -> Result<RetentionResult> {
     let mut out = RetentionResult::default();
+    crate::outbox::cleanup_terminal_system_mimes(pool, storage).await?;
     let seven = reference - CDuration::days(7);
     let ninety = reference - CDuration::days(90);
 
@@ -148,6 +149,10 @@ pub async fn run_retention(pool: &PgPool, storage: &Storage, reference: DateTime
     let refs: Vec<(String,)> = sqlx::query_as("SELECT storage_key FROM attachments").fetch_all(pool).await?;
     let refs: HashSet<String> = refs.into_iter().map(|r| r.0).collect();
     out.orphans_swept += storage.sweep_unreferenced_quarantine(day, &refs).len() as u64;
+    let refs: Vec<(String,)> =
+        sqlx::query_as("SELECT mime_key FROM notifications WHERE mime_key IS NOT NULL").fetch_all(pool).await?;
+    let refs: HashSet<String> = refs.into_iter().map(|r| r.0).collect();
+    out.orphans_swept += storage.sweep_unreferenced_mime(day, &refs).len() as u64;
 
     out.rate_buckets_cleaned = sqlx::query("DELETE FROM rate_buckets WHERE expires_at < $1")
         .bind(reference)

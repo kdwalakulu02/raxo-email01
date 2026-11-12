@@ -84,6 +84,8 @@ pub struct AppConfig {
     pub smtp_helo_name: Option<String>,
     pub smtp_direct_port: u16,
     pub smtp_direct_ipv4_only: bool,
+    pub smtp_node_id: String,
+    pub smtp_worker_concurrency: usize,
     /// Loaded and validated at startup when DKIM_PRIVATE_KEY_PATH is set.
     pub dkim: Option<Arc<Dkim>>,
     pub message_id_domain: String,
@@ -301,6 +303,24 @@ pub fn load_config(env: &HashMap<String, String>, custom_forms_path: Option<&str
         Some("false") => false,
         Some(s) => return Err(AppError::config("bad_request", format!("Invalid SMTP_DIRECT_IPV4_ONLY: {s}"))),
     };
+    let smtp_node_id = match nonempty("SMTP_NODE_ID") {
+        Some(id) if crate::capacity::valid_node_id(&id) => id,
+        None if !is_prod => "local".to_string(),
+        _ => {
+            return Err(AppError::config(
+                "bad_request",
+                "SMTP_NODE_ID must identify the sending node using 1-64 lowercase letters, digits, '-' or '_'",
+            ))
+        }
+    };
+    let smtp_worker_concurrency = match nonempty("SMTP_WORKER_CONCURRENCY") {
+        None => 3,
+        Some(s) => s
+            .parse::<usize>()
+            .ok()
+            .filter(|v| (1..=64).contains(v))
+            .ok_or_else(|| AppError::config("bad_request", format!("Invalid SMTP_WORKER_CONCURRENCY: {s}")))?,
+    };
     let dkim = match (nonempty("DKIM_PRIVATE_KEY_PATH"), nonempty("DKIM_DOMAIN"), nonempty("DKIM_SELECTOR")) {
         (None, None, None) => None,
         (Some(path), Some(domain), Some(selector)) => {
@@ -436,6 +456,8 @@ pub fn load_config(env: &HashMap<String, String>, custom_forms_path: Option<&str
         smtp_helo_name,
         smtp_direct_port,
         smtp_direct_ipv4_only,
+        smtp_node_id,
+        smtp_worker_concurrency,
         dkim,
         message_id_domain,
         captcha_secret,

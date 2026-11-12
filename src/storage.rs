@@ -171,6 +171,26 @@ impl Storage {
         Ok(())
     }
 
+    pub fn move_to_quarantine(&self, key: &str) -> Result<()> {
+        let q = self.resolve(key, Area::Quarantine)?;
+        let c = self.resolve(key, Area::Clean)?;
+        if q.exists() {
+            if c.exists() {
+                return Err(AppError::new(
+                    "storage_conflict",
+                    500,
+                    format!("Attachment exists in both storage areas for key: {key}"),
+                ));
+            }
+            return Ok(());
+        }
+        if !c.exists() {
+            return Err(AppError::not_found(format!("Attachment file not found for key: {key}")));
+        }
+        fs::rename(c, q)?;
+        Ok(())
+    }
+
     pub fn delete(&self, key: &str, area: Option<Area>) -> Result<()> {
         let areas = match area {
             Some(a) => vec![a],
@@ -211,6 +231,14 @@ impl Storage {
         referenced: &std::collections::HashSet<String>,
     ) -> Vec<String> {
         self.sweep_dir(Area::Quarantine, max_age, |k| !referenced.contains(k))
+    }
+
+    pub fn sweep_unreferenced_mime(
+        &self,
+        max_age: Duration,
+        referenced: &std::collections::HashSet<String>,
+    ) -> Vec<String> {
+        self.sweep_dir(Area::Mime, max_age, |k| !referenced.contains(k))
     }
 
     fn sweep_dir(&self, area: Area, max_age: Duration, eligible: impl Fn(&str) -> bool) -> Vec<String> {

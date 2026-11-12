@@ -27,13 +27,14 @@ pub fn sha256_hex(data: &[u8]) -> String {
 
 /// Migrations are embedded at compile time. 001–004 are byte-identical to the
 /// Node reference migrations (same schema and `schema_migrations` checksums);
-/// 005 is a Rust-only additive extension for per-attachment dispositions.
+/// 005–006 are Rust-only additive extensions.
 pub const EMBEDDED: &[(&str, &str)] = &[
     ("001_initial", include_str!("../migrations/001_initial.sql")),
     ("002_dynamic_forms", include_str!("../migrations/002_dynamic_forms.sql")),
     ("003_security_hardening", include_str!("../migrations/003_security_hardening.sql")),
     ("004_scan_results", include_str!("../migrations/004_scan_results.sql")),
     ("005_attachment_disposition", include_str!("../migrations/005_attachment_disposition.sql")),
+    ("006_outbound_capacity", include_str!("../migrations/006_outbound_capacity.sql")),
 ];
 
 pub async fn run_migrations(pool: &PgPool) -> Result<MigrationResult> {
