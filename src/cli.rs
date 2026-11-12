@@ -48,6 +48,10 @@ pub async fn run_cli(args: Vec<String>) -> i32 {
         };
     }
 
+    if let Some(code) = run_mail_command(primary, secondary, &args).await {
+        return code;
+    }
+
     let (config, storage, pool) = match init().await {
         Ok(x) => x,
         Err(e) => {
@@ -441,5 +445,224 @@ async fn export_attachment(
             eprintln!("Failed to write output file: {e}");
             Ok(2)
         }
+    }
+}
+
+// ---------------- mail commands (no database needed) ----------------
+
+/// Parses `--name value` options; returns None (after printing an error) on unknown or
+/// incomplete options.
+fn parse_opts(args: &[String], allowed: &[&str]) -> Option<std::collections::HashMap<String, String>> {
+    let mut m = std::collections::HashMap::new();
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if allowed.contains(&a) && args.get(i + 1).is_some() {
+            m.insert(a.trim_start_matches('-').to_string(), args[i + 1].clone());
+            i += 2;
+        } else {
+            eprintln!("Error: Unrecognized or incomplete option '{a}'");
+            return None;
+        }
+    }
+    Some(m)
+}
+
+async fn run_mail_command(primary: &str, secondary: &str, args: &[String]) -> Option<i32> {
+    match (primary, secondary) {
+        ("dkim", "generate") => Some(dkim_generate(&args[2..])),
+        ("dkim", "check") => Some(dkim_check(&args[2..]).await),
+        ("send-test", _) => Some(send_test(&args[1..]).await),
+        _ => None,
+    }
+}
+
+fn dkim_generate(args: &[String]) -> i32 {
+    let Some(o) = parse_opts(args, &["--domain", "--selector", "--out"]) else { return 2 };
+    let (Some(domain), Some(selector), Some(out_path)) = (o.get("domain"), o.get("selector"), o.get("out")) else {
+        eprintln!("Error: usage: dkim generate --domain <domain> --selector <selector> --out <path>");
+        return 2;
+    };
+    let (domain, selector) = match crate::dkim::normalize_names(domain, selector) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            return 2;
+        }
+    };
+    let path = PathBuf::from(out_path);
+    if path.exists() {
+        eprintln!("Error: Output file already exists (refusing to overwrite): {}", path.display());
+        return 2;
+    }
+    let (pem, public_key) = match crate::dkim::generate_rsa_2048() {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            return 4;
+        }
+    };
+    let res = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .and_then(|mut f| f.write_all(pem.as_bytes()).and_then(|_| f.sync_all()));
+    if let Err(e) = res {
+        eprintln!("Error: Failed to write key file {}: {e}", path.display());
+        return 2;
+    }
+    let name = format!("{selector}._domainkey.{domain}");
+    let value = crate::dkim::dns_txt_value(&public_key);
+    let chunks: Vec<String> =
+        value.as_bytes().chunks(250).map(|c| format!("\"{}\"", String::from_utf8_lossy(c))).collect();
+    println!("Wrote RSA-2048 private key (PKCS#8 PEM, mode 0600) to {}", path.display());
+    println!();
+    println!("Publish this DNS TXT record:");
+    println!("  Name:  {name}");
+    println!("  Type:  TXT");
+    println!("  Value: {value}");
+    println!();
+    println!("Zone-file form (strings over 255 bytes must be split):");
+    println!("  {name}. IN TXT ( {} )", chunks.join(" "));
+    println!();
+    println!("Then configure: DKIM_DOMAIN={domain} DKIM_SELECTOR={selector} DKIM_PRIVATE_KEY_PATH={}", path.display());
+    0
+}
+
+async fn dkim_check(args: &[String]) -> i32 {
+    if !args.is_empty() {
+        eprintln!("Error: Unrecognized option '{}'", args[0]);
+        return 2;
+    }
+    let cfg = match load_config_from_env() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Configuration error: {}", e.message);
+            return 2;
+        }
+    };
+    let Some(dkim) = cfg.dkim.clone() else {
+        eprintln!("Error: DKIM is not configured (set DKIM_DOMAIN, DKIM_SELECTOR, DKIM_PRIVATE_KEY_PATH).");
+        return 2;
+    };
+    let unaligned: Vec<&String> = cfg
+        .forms
+        .values()
+        .filter(|f| f.from.rsplit_once('@').map(|(_, d)| !dkim.aligned_with(d)).unwrap_or(true))
+        .map(|f| &f.id)
+        .collect();
+    let system_from_aligned = dkim.aligned_with(&cfg.message_id_domain);
+    let name = dkim.dns_name();
+    let mut report = json!({
+        "dns_name": name,
+        "expected_value": dkim.dns_value(),
+        "key_bits": rsa::traits::PublicKeyParts::size(dkim.public_key()) * 8,
+        "system_from_aligned": system_from_aligned,
+        "unaligned_forms": unaligned,
+    });
+    let resolver = match crate::smtp::SystemResolver::new() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Dependency failure: {e}");
+            return 4;
+        }
+    };
+    let records: Vec<String> = match resolver.inner().txt_lookup(format!("{name}.")).await {
+        Ok(l) => l
+            .answers()
+            .iter()
+            .filter_map(|r| match &r.data {
+                hickory_resolver::proto::rr::RData::TXT(t) => {
+                    Some(t.txt_data.iter().map(|c| String::from_utf8_lossy(c).into_owned()).collect::<String>())
+                }
+                _ => None,
+            })
+            .collect(),
+        Err(e) if e.is_no_records_found() => vec![],
+        Err(e) => {
+            report["status"] = json!("dns_error");
+            report["error"] = json!(e.to_string());
+            out(&report);
+            return 4;
+        }
+    };
+    let dkim_records: Vec<&String> = records.iter().filter(|r| r.contains("p=")).collect();
+    report["published"] = json!(dkim_records);
+    let (status, code) = match dkim_records.as_slice() {
+        [] => ("not_published", 3),
+        [r] => match crate::dkim::parse_dns_public_key(r) {
+            Ok(k) if &k == dkim.public_key() => ("match", 0),
+            Ok(_) => ("mismatch", 3),
+            Err(e) => {
+                report["error"] = json!(e);
+                ("invalid_record", 3)
+            }
+        },
+        _ => ("multiple_records", 3),
+    };
+    report["status"] = json!(status);
+    report["match"] = json!(code == 0);
+    out(&report);
+    code
+}
+
+async fn send_test(args: &[String]) -> i32 {
+    let Some(o) = parse_opts(args, &["--to", "--from"]) else { return 2 };
+    let Some(to) = o.get("to").map(|s| s.trim().to_string()) else {
+        eprintln!("Error: usage: send-test --to <address> [--from <address>]");
+        return 2;
+    };
+    let cfg = match load_config_from_env() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Configuration error: {}", e.message);
+            return 2;
+        }
+    };
+    let from = o.get("from").cloned().unwrap_or_else(|| format!("notifications@{}", cfg.message_id_domain));
+    for a in [&to, &from] {
+        if !crate::config::email_regex().is_match(a) {
+            eprintln!("Error: Invalid email address: {a}");
+            return 2;
+        }
+    }
+    let smtp = crate::smtp::SmtpConfig::from_app(&cfg);
+    let mode = match cfg.smtp_delivery_mode {
+        crate::config::DeliveryMode::Relay => "relay",
+        crate::config::DeliveryMode::Direct => "direct",
+    };
+    let now = Utc::now().to_rfc3339();
+    let text = format!("This is a Raxo Email delivery test sent at {now} via {mode} delivery.\n");
+    let html = format!("<p>This is a Raxo Email delivery test sent at {now} via {mode} delivery.</p>");
+    let r = crate::smtp::send_system_message(
+        &to,
+        "Raxo Email delivery test",
+        &text,
+        &html,
+        &smtp,
+        &from,
+        &cfg.message_id_domain,
+    )
+    .await;
+    let code = match &r {
+        crate::smtp::SubmitResult::Submitted { .. } => None,
+        crate::smtp::SubmitResult::SafeRetry(c)
+        | crate::smtp::SubmitResult::Failed(c)
+        | crate::smtp::SubmitResult::Unknown(c) => Some(c.clone()),
+    };
+    out(&json!({
+        "mode": mode,
+        "from": from,
+        "to": to,
+        "dkim": cfg.dkim.as_ref().map(|d| json!({"d": d.domain(), "s": d.selector()})),
+        "classification": r.kind(),
+        "error_code": code,
+        "receipt": r.receipt(),
+    }));
+    if code.is_none() {
+        0
+    } else {
+        4
     }
 }
