@@ -63,10 +63,7 @@ pub async fn run_migrations_with(pool: &PgPool, migrations: Vec<(String, String)
     res
 }
 
-async fn migrate_locked(
-    conn: &mut sqlx::PgConnection,
-    migrations: Vec<(String, String)>,
-) -> Result<MigrationResult> {
+async fn migrate_locked(conn: &mut sqlx::PgConnection, migrations: Vec<(String, String)>) -> Result<MigrationResult> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
            version text PRIMARY KEY,

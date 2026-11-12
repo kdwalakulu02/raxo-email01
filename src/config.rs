@@ -182,9 +182,8 @@ fn validate_form(i: usize, f: &FormConfig, issues: &mut Vec<String>) {
     }
     if let Some(r) = &f.reply_to_field {
         if !emails.contains(r) {
-            issues.push(format!(
-                "forms.{i}.reply_to_field: reply_to_field '{r}' must reference an existing email field"
-            ));
+            issues
+                .push(format!("forms.{i}.reply_to_field: reply_to_field '{r}' must reference an existing email field"));
         }
     }
 }
@@ -192,9 +191,8 @@ fn validate_form(i: usize, f: &FormConfig, issues: &mut Vec<String>) {
 pub fn parse_forms_config(raw: &str) -> Result<BTreeMap<String, FormConfig>> {
     let file: FormsFile = match serde_json::from_str::<serde_json::Value>(raw) {
         Err(_) => return Err(AppError::bad_request("Invalid forms.json syntax")),
-        Ok(v) => serde_json::from_value(v).map_err(|e| {
-            AppError::invalid_form(format!("Forms configuration invalid: {e}"))
-        })?,
+        Ok(v) => serde_json::from_value(v)
+            .map_err(|e| AppError::invalid_form(format!("Forms configuration invalid: {e}")))?,
     };
     let mut issues = Vec::new();
     if file.version != 1 {
@@ -228,9 +226,8 @@ pub fn load_config(env: &HashMap<String, String>, custom_forms_path: Option<&str
         .ok()
         .filter(|p| *p >= 1)
         .ok_or_else(|| AppError::config("bad_request", format!("Invalid PORT: {}", get("PORT").unwrap_or(""))))?;
-    let database_url = get("DATABASE_URL")
-        .ok_or_else(|| AppError::config("bad_request", "DATABASE_URL is required"))?
-        .to_string();
+    let database_url =
+        get("DATABASE_URL").ok_or_else(|| AppError::config("bad_request", "DATABASE_URL is required"))?.to_string();
 
     let forms_path_s = custom_forms_path.or(get("FORMS_CONFIG_PATH")).unwrap_or("config/forms.json");
     let forms_path = std::env::current_dir().unwrap_or_default().join(forms_path_s);

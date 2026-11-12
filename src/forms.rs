@@ -134,9 +134,7 @@ pub async fn verify_dynamic_form(pool: &PgPool, token: &str) -> Result<VerifyRes
         return Err(AppError::forbidden("This form has been deactivated"));
     }
     if form.verification_expires_at.map(|e| e < Utc::now()).unwrap_or(false) {
-        return Err(AppError::bad_request(
-            "Verification token has expired. Please request a new verification email.",
-        ));
+        return Err(AppError::bad_request("Verification token has expired. Please request a new verification email."));
     }
     let updated = sqlx::query_as::<_, RegisteredForm>(&format!(
         "UPDATE registered_forms SET status = 'active', verified_at = now(), verification_token_hash = NULL,

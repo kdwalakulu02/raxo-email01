@@ -171,12 +171,11 @@ pub async fn process_notification(
     let pool = &deps.pool;
     let storage = &deps.storage;
 
-    let sub: Option<SubmissionRow> = sqlx::query_as(
-        "SELECT id, fields, config_snapshot, created_at, deleted_at FROM submissions WHERE id = $1",
-    )
-    .bind(notif.submission_id)
-    .fetch_optional(pool)
-    .await?;
+    let sub: Option<SubmissionRow> =
+        sqlx::query_as("SELECT id, fields, config_snapshot, created_at, deleted_at FROM submissions WHERE id = $1")
+            .bind(notif.submission_id)
+            .fetch_optional(pool)
+            .await?;
     let Some(sub) = sub.filter(|s| s.deleted_at.is_none()) else {
         sqlx::query(
             "UPDATE notifications SET state = 'cancelled', lease_token = NULL, lease_expires_at = NULL,
@@ -291,9 +290,10 @@ pub async fn process_notification(
     // Build or reuse the immutable MIME message.
     let mime: Vec<u8>;
     if let Some(key) = &notif.mime_key {
-        let stored = notif.mime_sha256.as_ref().and_then(|expected| {
-            storage.read(key, Some(Area::Mime)).ok().filter(|b| &sha256_hex(b) == expected)
-        });
+        let stored = notif
+            .mime_sha256
+            .as_ref()
+            .and_then(|expected| storage.read(key, Some(Area::Mime)).ok().filter(|b| &sha256_hex(b) == expected));
         match stored {
             Some(b) => mime = b,
             None => {
@@ -384,7 +384,13 @@ async fn update_attachment_scan(pool: &PgPool, id: Uuid, state: &str, version: O
     Ok(())
 }
 
-async fn set_withheld(pool: &PgPool, id: Uuid, scan_state: &str, category: WithheldCategory, reason: &str) -> Result<()> {
+async fn set_withheld(
+    pool: &PgPool,
+    id: Uuid,
+    scan_state: &str,
+    category: WithheldCategory,
+    reason: &str,
+) -> Result<()> {
     sqlx::query(
         "UPDATE attachments SET scan_state = $1, scanned_at = now(), delivery_disposition = 'withheld',
            withheld_category = $2, disposition_reason = $3, disposition_at = now() WHERE id = $4",
@@ -413,7 +419,13 @@ async fn scanner_retry(pool: &PgPool, notif: &Notification, token: Uuid, code: &
     res("retry_wait", code.to_string())
 }
 
-async fn block_notification(pool: &PgPool, notif: &Notification, token: Uuid, code: &str, failures: Option<i32>) -> Result<()> {
+async fn block_notification(
+    pool: &PgPool,
+    notif: &Notification,
+    token: Uuid,
+    code: &str,
+    failures: Option<i32>,
+) -> Result<()> {
     sqlx::query(
         "UPDATE notifications SET state = 'blocked', last_error_code = $1,
            prepare_failures = COALESCE($2, prepare_failures), lease_token = NULL,
@@ -512,18 +524,15 @@ async fn record_outcome(
 ) -> Result<()> {
     let mut tx = pool.begin().await?;
     let fin = |outcome: &'static str| {
-        sqlx::query("UPDATE send_attempts SET outcome = $1, error_code = $2, receipt = $3, finished_at = now() WHERE id = $4")
-            .bind(outcome)
+        sqlx::query(
+            "UPDATE send_attempts SET outcome = $1, error_code = $2, receipt = $3, finished_at = now() WHERE id = $4",
+        )
+        .bind(outcome)
     };
     match r {
         SubmitResult::Submitted { .. } => {
             let receipt = r.receipt();
-            fin("submitted")
-                .bind(Option::<String>::None)
-                .bind(&receipt)
-                .bind(attempt_id)
-                .execute(&mut *tx)
-                .await?;
+            fin("submitted").bind(Option::<String>::None).bind(&receipt).bind(attempt_id).execute(&mut *tx).await?;
             sqlx::query(
                 "UPDATE notifications SET state = 'submitted', smtp_receipt = $1, lease_token = NULL,
                    lease_expires_at = NULL, updated_at = now() WHERE id = $2 AND lease_token = $3",
@@ -542,7 +551,12 @@ async fn record_outcome(
             .await?;
         }
         SubmitResult::SafeRetry(code) => {
-            fin("safe_retry").bind(Some(code)).bind(Option::<serde_json::Value>::None).bind(attempt_id).execute(&mut *tx).await?;
+            fin("safe_retry")
+                .bind(Some(code))
+                .bind(Option::<serde_json::Value>::None)
+                .bind(attempt_id)
+                .execute(&mut *tx)
+                .await?;
             if attempt_no >= 5 {
                 sqlx::query(
                     "UPDATE notifications SET state = 'failed', last_error_code = 'too_many_retries', lease_token = NULL,
@@ -568,8 +582,14 @@ async fn record_outcome(
             }
         }
         SubmitResult::Failed(code) | SubmitResult::Unknown(code) => {
-            let (outcome, state) = if matches!(r, SubmitResult::Failed(_)) { ("failed", "failed") } else { ("unknown", "unknown") };
-            fin(outcome).bind(Some(code)).bind(Option::<serde_json::Value>::None).bind(attempt_id).execute(&mut *tx).await?;
+            let (outcome, state) =
+                if matches!(r, SubmitResult::Failed(_)) { ("failed", "failed") } else { ("unknown", "unknown") };
+            fin(outcome)
+                .bind(Some(code))
+                .bind(Option::<serde_json::Value>::None)
+                .bind(attempt_id)
+                .execute(&mut *tx)
+                .await?;
             sqlx::query(
                 "UPDATE notifications SET state = $1, last_error_code = $2, lease_token = NULL, lease_expires_at = NULL,
                    updated_at = now() WHERE id = $3 AND lease_token = $4",

@@ -251,7 +251,8 @@ pub async fn env(o: EnvOpts) -> Env {
     std::fs::create_dir_all(&sdir).unwrap();
     let sentinel = if o.sentinel_up { Some(start_sentinel(&sdir)) } else { None };
     let sock = sentinel.as_ref().map(|s| s.socket.clone()).unwrap_or_else(|| sdir.join("absent.sock"));
-    let client = Sentinel::with_params(sock, Duration::from_millis(o.sentinel_timeout_ms), storage.snapshot_dir().unwrap(), 4);
+    let client =
+        Sentinel::with_params(sock, Duration::from_millis(o.sentinel_timeout_ms), storage.snapshot_dir().unwrap(), 4);
     client.init_snapshot_dir().unwrap();
     let smtp = start_smtp(o.smtp).await;
     let deps = QueueDeps {
@@ -300,14 +301,16 @@ pub async fn seed(e: &Env, message: &str, files: &[(&str, &[u8])]) -> Seeded {
     let sid = Uuid::new_v4();
     let nid = Uuid::new_v4();
     let snap = serde_json::to_value(form()).unwrap();
-    sqlx::query("INSERT INTO submissions (id, form_id, fingerprint, fields, config_snapshot) VALUES ($1,'contact',$2,$3,$4)")
-        .bind(sid)
-        .bind(sha(sid.to_string().as_bytes()))
-        .bind(serde_json::json!({"message": message}))
-        .bind(snap)
-        .execute(&e.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO submissions (id, form_id, fingerprint, fields, config_snapshot) VALUES ($1,'contact',$2,$3,$4)",
+    )
+    .bind(sid)
+    .bind(sha(sid.to_string().as_bytes()))
+    .bind(serde_json::json!({"message": message}))
+    .bind(snap)
+    .execute(&e.pool)
+    .await
+    .unwrap();
     let mut out = vec![];
     for (name, content) in files {
         let mut w = e.storage.begin_stage(10 * 1024 * 1024).await.unwrap();
@@ -373,7 +376,9 @@ pub async fn att_rows(e: &Env, sid: Uuid) -> Vec<AttRow> {
     .fetch_all(&e.pool)
     .await
     .unwrap();
-    rows.into_iter().map(|(name, scan_state, disposition, category)| AttRow { name, scan_state, disposition, category }).collect()
+    rows.into_iter()
+        .map(|(name, scan_state, disposition, category)| AttRow { name, scan_state, disposition, category })
+        .collect()
 }
 
 pub async fn verdicts(e: &Env, sid: Uuid) -> Vec<(String, String)> {

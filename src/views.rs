@@ -115,7 +115,10 @@ pub fn render_verification_page(r: &VerificationResult) -> String {
         ("Verification Failed", "Verification Failed", "⚠️")
     };
     let promoted = if r.success && r.promoted_count > 0 {
-        format!("<div class=\"highlight-box\">📦 {} held submission(s) have been unlocked and queued for delivery.</div>", r.promoted_count)
+        format!(
+            "<div class=\"highlight-box\">📦 {} held submission(s) have been unlocked and queued for delivery.</div>",
+            r.promoted_count
+        )
     } else {
         String::new()
     };

@@ -31,7 +31,11 @@ pub async fn run_retention(pool: &PgPool, storage: &Storage, reference: DateTime
     for (id,) in ids {
         let mut tx = pool.begin().await?;
         lock(&mut tx, id).await?;
-        sqlx::query("UPDATE submissions SET deleted_at = $1 WHERE id = $2").bind(reference).bind(id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE submissions SET deleted_at = $1 WHERE id = $2")
+            .bind(reference)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query(
             "UPDATE notifications SET state = 'cancelled', updated_at = now()
              WHERE submission_id = $1 AND state = 'held_unverified'",
@@ -59,7 +63,11 @@ pub async fn run_retention(pool: &PgPool, storage: &Storage, reference: DateTime
     for (id,) in ids {
         let mut tx = pool.begin().await?;
         lock(&mut tx, id).await?;
-        sqlx::query("UPDATE submissions SET deleted_at = $1 WHERE id = $2").bind(reference).bind(id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE submissions SET deleted_at = $1 WHERE id = $2")
+            .bind(reference)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query(
             "UPDATE notifications SET state = 'cancelled', updated_at = now()
              WHERE submission_id = $1 AND state IN ('queued','retry_wait','preparing')",
@@ -107,10 +115,12 @@ pub async fn run_retention(pool: &PgPool, storage: &Storage, reference: DateTime
             .bind(id)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("UPDATE attachments SET scan_state = 'deleted', original_name = '[redacted]' WHERE submission_id = $1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "UPDATE attachments SET scan_state = 'deleted', original_name = '[redacted]' WHERE submission_id = $1",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query(
             "UPDATE notifications SET mime_key = NULL, mime_sha256 = NULL, smtp_receipt = NULL, updated_at = now()
              WHERE submission_id = $1",
@@ -148,7 +158,10 @@ pub async fn run_retention(pool: &PgPool, storage: &Storage, reference: DateTime
 }
 
 async fn lock(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, id: Uuid) -> Result<()> {
-    sqlx::query("SELECT id FROM notifications WHERE submission_id = $1 FOR UPDATE").bind(id).fetch_all(&mut **tx).await?;
+    sqlx::query("SELECT id FROM notifications WHERE submission_id = $1 FOR UPDATE")
+        .bind(id)
+        .fetch_all(&mut **tx)
+        .await?;
     sqlx::query("SELECT id FROM submissions WHERE id = $1 FOR UPDATE").bind(id).fetch_all(&mut **tx).await?;
     Ok(())
 }

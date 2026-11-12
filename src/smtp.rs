@@ -136,7 +136,8 @@ impl Conn {
             if l.len() < 3 {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "malformed reply"));
             }
-            let code: u16 = l[..3].parse().map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "malformed reply"))?;
+            let code: u16 =
+                l[..3].parse().map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "malformed reply"))?;
             if !text.is_empty() {
                 text.push('\n');
             }
@@ -192,7 +193,8 @@ fn tls_fail(e: &io::Error) -> Fail {
 }
 
 async fn upgrade_tls(sock: Box<dyn Io>, host: &str, t: Duration) -> Result<Box<dyn Io>, Fail> {
-    let name = ServerName::try_from(host.to_string()).map_err(|_| Fail::Failed("err_tls_cert_altname_invalid".into()))?;
+    let name =
+        ServerName::try_from(host.to_string()).map_err(|_| Fail::Failed("err_tls_cert_altname_invalid".into()))?;
     let connector = TlsConnector::from(tls_config());
     match timeout(t, connector.connect(name, sock)).await {
         Err(_) => Err(Fail::SafeRetry("etimedout".into())),

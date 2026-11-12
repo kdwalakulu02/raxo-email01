@@ -157,7 +157,10 @@ struct Tracked {
 
 impl futures_util::Stream for Tracked {
     type Item = std::result::Result<axum::body::Bytes, axum::Error>;
-    fn poll_next(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
         match self.inner.as_mut() {
             Some(s) => std::pin::Pin::new(s).poll_next(cx),
             None => std::task::Poll::Ready(None),
@@ -229,7 +232,11 @@ fn header_str<'a>(h: &'a HeaderMap, name: &str) -> &'a str {
 }
 
 fn base_url(h: &HeaderMap, cfg: &AppConfig) -> String {
-    let host = h.get(header::HOST).and_then(|v| v.to_str().ok()).map(String::from).unwrap_or_else(|| format!("{}:{}", cfg.host, cfg.port));
+    let host = h
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(String::from)
+        .unwrap_or_else(|| format!("{}:{}", cfg.host, cfg.port));
     let proto = h.get("x-forwarded-proto").and_then(|v| v.to_str().ok()).filter(|s| !s.is_empty()).unwrap_or("http");
     format!("{proto}://{host}")
 }
@@ -288,7 +295,11 @@ async fn test_page(State(s): State<Shared>, headers: HeaderMap) -> Response {
     let site_key = std::env::var("CAPTCHA_SITEKEY").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
     html_resp(
         200,
-        render_test_page(&base_url(&headers, &s.config), "vps-delivery-test", site_key.as_deref().unwrap_or("0x4AAAAAAFvLUA97Ll30BfAu")),
+        render_test_page(
+            &base_url(&headers, &s.config),
+            "vps-delivery-test",
+            site_key.as_deref().unwrap_or("0x4AAAAAAFvLUA97Ll30BfAu"),
+        ),
     )
 }
 
@@ -425,7 +436,14 @@ async fn register_form(
     if !accept.contains("application/json") && accept.contains("text/html") {
         return Ok(html_resp(
             200,
-            render_generator_page(&base, Some(GeneratorState { form_id: Some(form_id), email: Some(&created.form.recipient_email), error: None })),
+            render_generator_page(
+                &base,
+                Some(GeneratorState {
+                    form_id: Some(form_id),
+                    email: Some(&created.form.recipient_email),
+                    error: None,
+                }),
+            ),
         ));
     }
     Ok(json_resp(
@@ -443,12 +461,19 @@ async fn register_form(
 
 // ---------- verification ----------
 
-const VERIFIED_MSG: &str = "Your email ownership has been verified! Your form is now active and ready to deliver submissions.";
+const VERIFIED_MSG: &str =
+    "Your email ownership has been verified! Your form is now active and ready to deliver submissions.";
 
 fn verification_html(status: u16, success: bool, message: &str, promoted: i64) -> Response {
     html_resp(
         status,
-        render_verification_page(&VerificationResult { success, message, promoted_count: promoted, is_prefetch: false, token: None }),
+        render_verification_page(&VerificationResult {
+            success,
+            message,
+            promoted_count: promoted,
+            is_prefetch: false,
+            token: None,
+        }),
     )
 }
 
@@ -487,7 +512,9 @@ async fn verify_post(
     body: Body,
 ) -> Result<Response> {
     let fields = read_simple_body(&headers, body).await?;
-    let token = str_field(&fields, "token").filter(|t| !t.is_empty()).or_else(|| q.get("token").cloned().filter(|t| !t.is_empty()));
+    let token = str_field(&fields, "token")
+        .filter(|t| !t.is_empty())
+        .or_else(|| q.get("token").cloned().filter(|t| !t.is_empty()));
     let Some(token) = token else {
         return Ok(verification_html(400, false, "Missing verification token.", 0));
     };
@@ -534,7 +561,12 @@ async fn resend(State(s): State<Shared>, Path(form_id): Path<String>, headers: H
     Ok(json_resp(200, json!({"status":"ok","message":"A new activation email has been sent."})))
 }
 
-async fn deactivate(State(s): State<Shared>, Path(form_id): Path<String>, headers: HeaderMap, body: Body) -> Result<Response> {
+async fn deactivate(
+    State(s): State<Shared>,
+    Path(form_id): Path<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<Response> {
     consume_deactivation_rate_limit(&s.pool, &form_id, Utc::now()).await?;
     let fields = read_simple_body(&headers, body).await?;
     let token = str_field(&fields, "management_token")
@@ -550,12 +582,20 @@ async fn deactivate(State(s): State<Shared>, Path(form_id): Path<String>, header
             0,
         ));
     }
-    Ok(json_resp(200, json!({"status":"deactivated","form_id":form_id,"message":"Form has been successfully deactivated."})))
+    Ok(json_resp(
+        200,
+        json!({"status":"deactivated","form_id":form_id,"message":"Form has been successfully deactivated."}),
+    ))
 }
 
 // ---------- submissions ----------
 
-pub fn validate_next_url(next: &str, origin: Option<&str>, referer: Option<&str>, allowed_origins: &[String]) -> Option<String> {
+pub fn validate_next_url(
+    next: &str,
+    origin: Option<&str>,
+    referer: Option<&str>,
+    allowed_origins: &[String],
+) -> Option<String> {
     let t = next.trim();
     if t.is_empty() {
         return None;
@@ -571,9 +611,11 @@ pub fn validate_next_url(next: &str, origin: Option<&str>, referer: Option<&str>
         return None;
     }
     if !allowed_origins.is_empty() {
-        let ok = allowed_origins
-            .iter()
-            .any(|ao| Url::parse(ao).map(|u| u.origin().ascii_serialization() == parsed.origin().ascii_serialization()).unwrap_or(false));
+        let ok = allowed_origins.iter().any(|ao| {
+            Url::parse(ao)
+                .map(|u| u.origin().ascii_serialization() == parsed.origin().ascii_serialization())
+                .unwrap_or(false)
+        });
         return ok.then(|| parsed.to_string());
     }
     let source = origin.filter(|s| !s.is_empty()).or(referer.filter(|s| !s.is_empty()));
@@ -608,7 +650,9 @@ fn multipart_boundary(ct: &str) -> Option<String> {
 }
 
 fn check_multipart_length(headers: &HeaderMap) -> Result<()> {
-    if let Some(n) = headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok()) {
+    if let Some(n) =
+        headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok())
+    {
         if n > MAX_AGGREGATE_MULTIPART_BYTES {
             return Err(AppError::new(
                 "file_too_large",
@@ -688,13 +732,17 @@ async fn submit_public(
             fields.insert(k.clone(), Some(sv));
         }
         let get = |k: &str| fields.get(k).and_then(|v| v.clone()).unwrap_or_default();
-        let honey = !get("_honey").trim().is_empty() || !get("_gotcha").trim().is_empty() || !get("website").trim().is_empty();
+        let honey =
+            !get("_honey").trim().is_empty() || !get("_gotcha").trim().is_empty() || !get("website").trim().is_empty();
         let client_id = {
             let c = get("_submission_id");
             if c.is_empty() {
                 None
             } else {
-                Some(Uuid::parse_str(c.trim()).map_err(|_| AppError::invalid_form("Invalid _submission_id: must be a valid UUID v4"))?)
+                Some(
+                    Uuid::parse_str(c.trim())
+                        .map_err(|_| AppError::invalid_form("Invalid _submission_id: must be a valid UUID v4"))?,
+                )
             }
         };
         ParsedInput {
@@ -796,7 +844,12 @@ async fn submit_legacy(
         let hosts: Vec<String> = form
             .allowed_origins
             .iter()
-            .map(|o| Url::parse(o).ok().and_then(|u| u.host_str().map(|h| h.to_lowercase())).unwrap_or_else(|| o.to_lowercase()))
+            .map(|o| {
+                Url::parse(o)
+                    .ok()
+                    .and_then(|u| u.host_str().map(|h| h.to_lowercase()))
+                    .unwrap_or_else(|| o.to_lowercase())
+            })
             .collect();
         let valid = verify_captcha(
             parsed.captcha_token.as_deref(),

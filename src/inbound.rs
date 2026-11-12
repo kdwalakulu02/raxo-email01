@@ -41,11 +41,8 @@ fn top_level_headers(raw: &[u8]) -> String {
 
 pub fn detect_signature(raw: &[u8]) -> SignatureKind {
     let headers = top_level_headers(raw).to_ascii_lowercase();
-    let ctype = headers
-        .lines()
-        .find_map(|l| l.strip_prefix("content-type:"))
-        .map(|v| v.trim().to_string())
-        .unwrap_or_default();
+    let ctype =
+        headers.lines().find_map(|l| l.strip_prefix("content-type:")).map(|v| v.trim().to_string()).unwrap_or_default();
     if ctype.starts_with("multipart/signed") {
         return SignatureKind::MultipartSigned;
     }

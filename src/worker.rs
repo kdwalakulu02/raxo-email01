@@ -20,7 +20,12 @@ pub struct WorkerOptions {
 
 impl WorkerOptions {
     pub fn new(database_url: String) -> Self {
-        Self { database_url, poll_interval: Duration::from_secs(1), heartbeat_interval: Duration::from_secs(20), lease_secs: 120 }
+        Self {
+            database_url,
+            poll_interval: Duration::from_secs(1),
+            heartbeat_interval: Duration::from_secs(20),
+            lease_secs: 120,
+        }
     }
 }
 
@@ -40,7 +45,8 @@ impl Worker {
     /// connection means losing ownership.
     pub async fn acquire_lock(&self) -> bool {
         let Ok(mut conn) = PgConnection::connect(&self.opts.database_url).await else { return false };
-        let got: std::result::Result<(bool,), sqlx::Error> = sqlx::query_as("SELECT pg_try_advisory_lock($1)").bind(WORKER_ADVISORY_LOCK_ID).fetch_one(&mut conn).await;
+        let got: std::result::Result<(bool,), sqlx::Error> =
+            sqlx::query_as("SELECT pg_try_advisory_lock($1)").bind(WORKER_ADVISORY_LOCK_ID).fetch_one(&mut conn).await;
         match got {
             Ok((true,)) => {
                 *self.lock_conn.lock().await = Some(conn);

@@ -80,9 +80,7 @@ pub async fn consume_rate_limit(
     let mut tx = pool.begin().await?;
     if !bump(&mut tx, form_id, "ip_minute", &minute_key, now + Duration::hours(1), minute_limit).await? {
         let _ = tx.rollback().await;
-        return Err(AppError::rate_limited(
-            "Too many form submission attempts from your IP. Please try again later.",
-        ));
+        return Err(AppError::rate_limited("Too many form submission attempts from your IP. Please try again later."));
     }
     if !bump(&mut tx, form_id, "form_day", &day_key, now + Duration::hours(36), daily_limit).await? {
         let _ = tx.rollback().await;
@@ -116,9 +114,7 @@ pub async fn consume_recipient_registration_rate_limit(pool: &PgPool, email: &st
         &key,
         now + Duration::hours(2),
         3,
-        AppError::rate_limited(
-            "Too many form creation attempts for this email address. Please try again in an hour.",
-        ),
+        AppError::rate_limited("Too many form creation attempts for this email address. Please try again in an hour."),
     )
     .await
 }

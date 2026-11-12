@@ -209,7 +209,10 @@ async fn dispatch(
                 return Ok(3);
             };
             if deleted.is_none() {
-                sqlx::query("UPDATE submissions SET deleted_at = now() WHERE id = $1").bind(id).execute(&mut *tx).await?;
+                sqlx::query("UPDATE submissions SET deleted_at = now() WHERE id = $1")
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await?;
             }
             if let Some((nid, state)) = notif {
                 if ["queued", "retry_wait", "preparing"].contains(&state.as_str()) {
@@ -290,7 +293,12 @@ async fn dispatch(
     }
 }
 
-async fn export_attachment(args: &[String], config: &AppConfig, storage: &Storage, pool: &PgPool) -> Result<i32, sqlx::Error> {
+async fn export_attachment(
+    args: &[String],
+    config: &AppConfig,
+    storage: &Storage,
+    pool: &PgPool,
+) -> Result<i32, sqlx::Error> {
     let Some(id) = parse_uuid(args.get(2)) else {
         eprintln!("Error: Valid attachment UUID is required.");
         return Ok(2);
@@ -366,10 +374,12 @@ async fn export_attachment(args: &[String], config: &AppConfig, storage: &Storag
         };
         let sentinel = Sentinel::new(config, snap);
         let rec = sentinel.scan(content, &actual, &att_id.to_string()).await;
-        let notif: Option<(Uuid,)> = sqlx::query_as("SELECT n.id FROM notifications n JOIN attachments a ON a.submission_id = n.submission_id WHERE a.id = $1")
-            .bind(att_id)
-            .fetch_optional(pool)
-            .await?;
+        let notif: Option<(Uuid,)> = sqlx::query_as(
+            "SELECT n.id FROM notifications n JOIN attachments a ON a.submission_id = n.submission_id WHERE a.id = $1",
+        )
+        .bind(att_id)
+        .fetch_optional(pool)
+        .await?;
         if let Some((nid,)) = notif {
             let _ = record_scan_result(pool, att_id, nid, &rec).await;
         }
@@ -391,11 +401,13 @@ async fn export_attachment(args: &[String], config: &AppConfig, storage: &Storag
                     eprintln!("Error: {}", e.message);
                     return Ok(3);
                 }
-                sqlx::query("UPDATE attachments SET scan_state = 'clean', scan_version = $1, scanned_at = now() WHERE id = $2")
-                    .bind(version)
-                    .bind(att_id)
-                    .execute(pool)
-                    .await?;
+                sqlx::query(
+                    "UPDATE attachments SET scan_state = 'clean', scan_version = $1, scanned_at = now() WHERE id = $2",
+                )
+                .bind(version)
+                .bind(att_id)
+                .execute(pool)
+                .await?;
             }
         }
     }
@@ -411,7 +423,12 @@ async fn export_attachment(args: &[String], config: &AppConfig, storage: &Storag
         eprintln!("Error: Stored file SHA-256 checksum mismatch.");
         return Ok(3);
     }
-    let res = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&resolved).and_then(|mut f| f.write_all(&content));
+    let res = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&resolved)
+        .and_then(|mut f| f.write_all(&content));
     match res {
         Ok(()) => {
             println!(

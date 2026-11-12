@@ -236,10 +236,7 @@ impl Storage {
     pub fn list_keys(&self, area: Area) -> Vec<String> {
         fs::read_dir(self.root.join(area.dir()))
             .map(|rd| {
-                rd.flatten()
-                    .map(|e| e.file_name().to_string_lossy().to_string())
-                    .filter(|n| valid_key(n))
-                    .collect()
+                rd.flatten().map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| valid_key(n)).collect()
             })
             .unwrap_or_default()
     }

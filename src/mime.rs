@@ -136,7 +136,11 @@ impl Notice {
             if names.is_empty() {
                 continue;
             }
-            h.push_str(&format!("<p style=\"margin:8px 0 4px\">{} ({}):</p><ul style=\"margin:0\">", escape_html(label), names.len()));
+            h.push_str(&format!(
+                "<p style=\"margin:8px 0 4px\">{} ({}):</p><ul style=\"margin:0\">",
+                escape_html(label),
+                names.len()
+            ));
             for n in names {
                 h.push_str(&format!("<li>{}</li>", escape_html(n)));
             }
@@ -248,7 +252,11 @@ fn render_html(
     if !attachments.is_empty() {
         h.push_str("<ul style=\"margin:0\">");
         for a in attachments {
-            h.push_str(&format!("<li>{} ({} bytes)</li>", escape_html(&display_filename(&a.filename)), a.content.len()));
+            h.push_str(&format!(
+                "<li>{} ({} bytes)</li>",
+                escape_html(&display_filename(&a.filename)),
+                a.content.len()
+            ));
         }
         h.push_str("</ul>");
     }
@@ -350,11 +358,7 @@ pub fn build_notification(
         return Err(AppError::new(
             "mime_too_large",
             413,
-            format!(
-                "Final notification MIME size ({} bytes) exceeds maximum limit ({} bytes)",
-                bytes.len(),
-                max_bytes
-            ),
+            format!("Final notification MIME size ({} bytes) exceeds maximum limit ({} bytes)", bytes.len(), max_bytes),
         ));
     }
     Ok(bytes)

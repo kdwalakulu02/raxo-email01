@@ -36,10 +36,7 @@ struct FpPayload<'a> {
 pub fn compute_fingerprint(fields: &BTreeMap<String, Option<String>>, atts: &[StagedAttachment]) -> String {
     let mut sorted: Vec<&StagedAttachment> = atts.iter().collect();
     sorted.sort_by(|a, b| {
-        a.original_name
-            .cmp(&b.original_name)
-            .then(a.size_bytes.cmp(&b.size_bytes))
-            .then(a.sha256.cmp(&b.sha256))
+        a.original_name.cmp(&b.original_name).then(a.size_bytes.cmp(&b.size_bytes)).then(a.sha256.cmp(&b.sha256))
     });
     let payload = FpPayload {
         fields,
@@ -70,11 +67,7 @@ fn judge_existing(existing: &ExistingRow, fingerprint: &str) -> Result<Receipt> 
         ));
     }
     if deleted_at.is_some() {
-        return Err(AppError::new(
-            "idempotency_conflict",
-            410,
-            "Submission was deleted and cannot be resubmitted.",
-        ));
+        return Err(AppError::new("idempotency_conflict", 410, "Submission was deleted and cannot be resubmitted."));
     }
     if fp == fingerprint {
         Ok(Receipt::received(Some(*id)))
@@ -120,8 +113,8 @@ pub async fn accept_submission(
     let notification_id = Uuid::new_v4();
     let message_id = format!("<{}@{}>", Uuid::new_v4(), message_id_domain);
 
-    let res = insert_all(pool, parsed, form, &fingerprint, submission_id, notification_id, &message_id, initial_state)
-        .await;
+    let res =
+        insert_all(pool, parsed, form, &fingerprint, submission_id, notification_id, &message_id, initial_state).await;
     match res {
         Ok(Some(r)) => Ok(r),
         Ok(None) => {

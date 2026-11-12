@@ -21,13 +21,17 @@ fn migrations_001_to_004_are_byte_identical_to_node_reference() {
 #[tokio::test(flavor = "multi_thread")]
 async fn migrations_apply_once_and_are_idempotent_with_checksums() {
     let pool = fresh_db().await;
-    let versions: Vec<String> = sqlx::query_scalar("SELECT version FROM schema_migrations ORDER BY version")
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+    let versions: Vec<String> =
+        sqlx::query_scalar("SELECT version FROM schema_migrations ORDER BY version").fetch_all(&pool).await.unwrap();
     assert_eq!(
         versions,
-        ["001_initial", "002_dynamic_forms", "003_security_hardening", "004_scan_results", "005_attachment_disposition"]
+        [
+            "001_initial",
+            "002_dynamic_forms",
+            "003_security_hardening",
+            "004_scan_results",
+            "005_attachment_disposition"
+        ]
     );
     let again = raxo_email::db::run_migrations(&pool).await.unwrap();
     assert!(again.applied.is_empty(), "re-running must apply nothing: {:?}", again.applied);

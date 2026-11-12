@@ -116,17 +116,23 @@ pub struct ScanRecord {
 /// Delivery decision derived from a scan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScanOutcome {
-    Clean { version: String },
-    Blocked { reason: String },
+    Clean {
+        version: String,
+    },
+    Blocked {
+        reason: String,
+    },
     /// Transient or infrastructure failure: never delivers, retried by the worker.
-    Error { reason: String },
+    Error {
+        reason: String,
+    },
 }
 
 pub fn outcome_of(rec: &ScanRecord) -> ScanOutcome {
     match rec.verdict {
-        Verdict::Clean => ScanOutcome::Clean {
-            version: rec.engine_version.clone().unwrap_or_else(|| "raxosentinel".into()),
-        },
+        Verdict::Clean => {
+            ScanOutcome::Clean { version: rec.engine_version.clone().unwrap_or_else(|| "raxosentinel".into()) }
+        }
         Verdict::Detected | Verdict::Suspicious => ScanOutcome::Blocked {
             reason: rec.detection.clone().unwrap_or_else(|| rec.verdict.as_str().to_lowercase()),
         },
@@ -134,9 +140,9 @@ pub fn outcome_of(rec: &ScanRecord) -> ScanOutcome {
         Verdict::Unscanned => ScanOutcome::Blocked {
             reason: format!("unscanned: {}", rec.error.clone().unwrap_or_else(|| "content not scannable".into())),
         },
-        Verdict::Error | Verdict::Busy | Verdict::Timeout => ScanOutcome::Error {
-            reason: rec.error.clone().unwrap_or_else(|| rec.verdict.as_str().to_string()),
-        },
+        Verdict::Error | Verdict::Busy | Verdict::Timeout => {
+            ScanOutcome::Error { reason: rec.error.clone().unwrap_or_else(|| rec.verdict.as_str().to_string()) }
+        }
     }
 }
 
@@ -166,9 +172,9 @@ pub enum Disposition {
 pub fn disposition_of(rec: &ScanRecord) -> Disposition {
     let reason = || rec.error.clone().unwrap_or_else(|| rec.verdict.as_str().to_lowercase());
     match rec.verdict {
-        Verdict::Clean => Disposition::Deliver {
-            version: rec.engine_version.clone().unwrap_or_else(|| "raxosentinel".into()),
-        },
+        Verdict::Clean => {
+            Disposition::Deliver { version: rec.engine_version.clone().unwrap_or_else(|| "raxosentinel".into()) }
+        }
         Verdict::Detected | Verdict::Suspicious => Disposition::Withhold {
             category: WithheldCategory::Flagged,
             reason: rec.detection.clone().unwrap_or_else(|| rec.verdict.as_str().to_lowercase()),
@@ -179,11 +185,9 @@ pub fn disposition_of(rec: &ScanRecord) -> Disposition {
             reason: format!("unscanned: {}", reason()),
             transient: false,
         },
-        Verdict::Error | Verdict::Busy | Verdict::Timeout => Disposition::Withhold {
-            category: WithheldCategory::NotInspected,
-            reason: reason(),
-            transient: true,
-        },
+        Verdict::Error | Verdict::Busy | Verdict::Timeout => {
+            Disposition::Withhold { category: WithheldCategory::NotInspected, reason: reason(), transient: true }
+        }
     }
 }
 
@@ -260,7 +264,8 @@ impl Sentinel {
         let this = self.clone();
         let expected = sha256.to_string();
         let att = attachment_id.to_string();
-        let joined = tokio::task::spawn_blocking(move || this.scan_blocking(&snap_dir, &att, &content, &expected)).await;
+        let joined =
+            tokio::task::spawn_blocking(move || this.scan_blocking(&snap_dir, &att, &content, &expected)).await;
         let result = match joined {
             Ok(r) => r,
             Err(e) => Err((Verdict::Error, format!("sentinel_internal: {e}"))),
@@ -323,7 +328,9 @@ impl Sentinel {
                     .mode(0o400)
                     .open(&file)
                     .map_err(|e| (Verdict::Error, format!("sentinel_internal: {e}")))?;
-                f.write_all(content).and_then(|_| f.sync_all()).map_err(|e| (Verdict::Error, format!("sentinel_internal: {e}")))?;
+                f.write_all(content)
+                    .and_then(|_| f.sync_all())
+                    .map_err(|e| (Verdict::Error, format!("sentinel_internal: {e}")))?;
             }
             let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o400));
             let before = std::fs::read(&file).map_err(|e| (Verdict::Error, format!("sentinel_internal: {e}")))?;
@@ -372,9 +379,8 @@ impl Sentinel {
         };
         send_fd_request(&stream, f.as_raw_fd(), &req).map_err(unavailable)?;
 
-        let timed_out = |e: &std::io::Error| {
-            matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
-        };
+        let timed_out =
+            |e: &std::io::Error| matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut);
         let mut len = [0u8; 4];
         if let Err(e) = stream.read_exact(&mut len) {
             return Err(if timed_out(&e) {
@@ -429,7 +435,11 @@ fn send_fd_request(stream: &UnixStream, fd: i32, req: &ScanRequest) -> Result<()
         (*cmsg).cmsg_level = libc::SOL_SOCKET;
         (*cmsg).cmsg_type = libc::SCM_RIGHTS;
         (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<i32>() as u32) as usize;
-        std::ptr::copy_nonoverlapping(&fd as *const i32 as *const u8, libc::CMSG_DATA(cmsg), std::mem::size_of::<i32>());
+        std::ptr::copy_nonoverlapping(
+            &fd as *const i32 as *const u8,
+            libc::CMSG_DATA(cmsg),
+            std::mem::size_of::<i32>(),
+        );
         if libc::sendmsg(stream.as_raw_fd(), &msg, libc::MSG_NOSIGNAL) < 0 {
             return Err(format!("sendmsg failed: {}", std::io::Error::last_os_error()));
         }

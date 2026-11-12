@@ -77,12 +77,7 @@ async fn one_suspicious_attachment_is_withheld_and_email_still_delivered() {
 #[tokio::test(flavor = "multi_thread")]
 async fn mixed_clean_and_suspicious_delivers_only_clean() {
     let e = env(EnvOpts::default()).await;
-    let s = seed(
-        &e,
-        "mixed",
-        &[("good.pdf", CLEAN), ("bad.pdf", EICAR_PDF), ("odd.pdf", SUSPECT_PDF)],
-    )
-    .await;
+    let s = seed(&e, "mixed", &[("good.pdf", CLEAN), ("bad.pdf", EICAR_PDF), ("odd.pdf", SUSPECT_PDF)]).await;
     run_once(&e).await.unwrap();
     assert_eq!(notif_state(&e, s.notification_id).await, "submitted");
 
@@ -209,12 +204,8 @@ async fn notice_escapes_html_and_blocks_header_injection() {
     let nasty = "<img src=x onerror=alert(1)>\"&'.pdf";
     let crlf = "evil\r\nBcc: attacker@example.test\r\n.pdf";
     let bidi = "invoice\u{202E}fdp.exe";
-    seed(
-        &e,
-        "<script>alert(1)</script> & body",
-        &[(nasty, EICAR_PDF), (crlf, SUSPECT_PDF), (bidi, b"%PDF-1.4 BOOM")],
-    )
-    .await;
+    seed(&e, "<script>alert(1)</script> & body", &[(nasty, EICAR_PDF), (crlf, SUSPECT_PDF), (bidi, b"%PDF-1.4 BOOM")])
+        .await;
     run_once(&e).await.unwrap();
     let msg = only_message(&e);
     let html = html_body(&msg);
