@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Connect your website forms to your email with attachment scanning and private form IDs.">
+  <title>Raxo Forms — Form handling, visualised</title>
+  <link rel="icon" href="/assets/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/styles.css?v={{V}}">
+  <script src="/assets/app.js?v={{V}}" defer></script>
+</head>
+<body>
+  <div class="site">
+    <header class="header">
+      <nav class="nav" aria-label="Main navigation">
+        <a class="brand" href="#top" aria-label="Raxo Forms home"><img class="brand-logo" src="/assets/logo.svg" alt="" width="28" height="28"> Raxo Forms</a>
+        <button type="button" class="menu-toggle" aria-expanded="false" aria-controls="nav-links" aria-label="Toggle navigation">☰</button>
+        <div class="nav-links" id="nav-links"><a href="#features">Features</a><a href="#security">Security</a><a href="#how-it-works">How it works</a><a href="#generator">Integration</a></div>
+        <a class="button nav-cta" href="#generator">Get started</a>
+      </nav>
+    </header>
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-content">
+          <div class="eyebrow">Form handling, visualised</div>
+          <h1 id="hero-title">The invisible<br class="desktop-break"> layer your forms<br class="desktop-break"> were missing.</h1>
+          <p class="hero-copy">Connect your website forms without managing a backend. Raxo Forms scans attachments, keeps your receiving address private and forwards submissions to your inbox.</p>
+          <div class="hero-actions">
+            <a class="button primary" href="#generator">Get Form ID <span class="button-arrow"><img src="/assets/arrow.svg" alt=""></span></a>
+            <a class="button secondary" href="#how-it-works"><img src="/assets/chat.svg" alt="">How it works</a>
+          </div>
+          <ul class="hero-benefits">
+            <li><span class="benefit-icon"><img src="/assets/backend.svg" alt=""></span><div><strong>No Backend Setup</strong><p>No backend or mail server to manage.</p></div></li>
+            <li><span class="benefit-icon"><img src="/assets/scan.svg" alt=""></span><div><strong>Automatic Security Scanning</strong><p>Attachments scanned; flagged files withheld.</p></div></li>
+            <li><span class="benefit-icon"><img src="/assets/lock.svg" alt=""></span><div><strong>Privacy-Focused Email Delivery</strong><p>Use a Form ID instead of exposing your email address in the frontend.</p></div></li>
+          </ul>
+        </div>
+        <div class="hero-visual" role="group" aria-label="Illustration of form processing, example status cards">
+          <img class="hero-art" src="/assets/hero-art.webp" alt="" fetchpriority="high" width="1720" height="1390">
+          <div class="status-card submission-card"><span class="panel-icon"><img src="/assets/submission.svg" alt=""></span><div><strong>New submission</strong><small>Contact form</small></div></div>
+          <div class="status-card scan-card"><div class="panel-title"><img src="/assets/panel-scan.svg" alt=""> Attachment scan</div><div class="file-row"><span>brochure.pdf</span><span class="pill clean">Clean</span></div><div class="file-row held-row"><span>invoice.pdf</span><span class="pill held">Held</span></div></div>
+          <div class="status-card inbox-card"><div class="panel-title"><img src="/assets/panel-lock.svg" alt=""> Inbox · private</div><div class="enquiry"><span class="avatar"></span><strong>New enquiry</strong></div><div class="token"><span>Your address</span><b>••••••</b></div></div>
+        </div>
+      </section>
+      <section class="workflow" id="how-it-works" aria-label="How submissions travel">
+        <div class="workflow-desktop">
+          <img class="workflow-art" src="/assets/workflow.svg" alt="" width="840" height="310">
+          <div class="workflow-label first"><span>01</span><h2>Your Website</h2><p>No backend setup</p></div>
+          <div class="workflow-label second"><span>02</span><h2>Secure Processing</h2><p>Attachment scanning</p><small>Flagged files withheld</small></div>
+          <div class="workflow-label third"><span>03 · DELIVERED</span><h2>Your Inbox</h2><p>Private email delivery</p><small>Via a Form ID</small></div>
+        </div>
+        <ol class="workflow-mobile"><li><img src="/assets/step-website.svg" alt=""><div><span>01</span><h2>Your Website</h2><p>No backend setup</p></div></li><li><img src="/assets/step-processing.svg" alt=""><div><span>02</span><h2>Secure Processing</h2><p>Attachment scanning; flagged files withheld.</p></div></li><li><img src="/assets/step-inbox.svg" alt=""><div><span>03 · DELIVERED</span><h2>Your Inbox</h2><p>Private email delivery via a Form ID.</p></div></li></ol>
+      </section>
+      <section class="section problems" id="security" aria-labelledby="problem-title">
+        <div class="section-head"><h2 id="problem-title">Why do you need Raxo Forms?</h2><p>A simple form can introduce more challenges than you might expect. Keep enquiries, attachments and email delivery manageable.</p></div>
+        <div class="problem-grid">
+          <article class="problem-card"><span class="tile-icon"><img src="/assets/problem-email.svg" alt=""></span><h3>Too many<br>unwanted messages?</h3><p>Spam, bots and irrelevant submissions make genuine customer enquiries harder to find.</p></article>
+          <article class="problem-card"><span class="tile-icon"><img src="/assets/problem-file.svg" alt=""></span><h3>Suspicious<br>attachments?</h3><p>Files submitted by unknown visitors may contain malicious or harmful content.</p></article>
+          <article class="problem-card"><span class="tile-icon"><img src="/assets/problem-server.svg" alt=""></span><h3>Backend setup<br>too complex?</h3><p>Building and maintaining servers just to handle contact forms requires time and technical effort.</p></article>
+          <article class="problem-card"><span class="tile-icon"><img src="/assets/problem-private.svg" alt=""></span><h3>Exposed<br>email address?</h3><p>Publishing your receiving email address in form code can lead to scraping and unwanted contact.</p></article>
+        </div>
+      </section>
+      <section class="section features" id="features" aria-labelledby="features-title">
+        <div class="section-head"><h2 id="features-title">Key Features</h2><p>Built for simpler, more private website form delivery.</p></div>
+        <div class="feature-grid">
+          <article class="feature-card"><span class="tile-icon"><img src="/assets/feature-shield.svg" alt=""></span><div><h3>Submission controls</h3><p>Recipient verification, a honeypot field and sending limits help protect your form delivery.</p></div></article>
+          <article class="feature-card"><span class="tile-icon"><img src="/assets/feature-scan.svg" alt=""></span><div><h3>Attachment Security</h3><p>PDF files are scanned before forwarding. Flagged or unscannable attachments are withheld.</p></div></article>
+          <article class="feature-card"><span class="tile-icon"><img src="/assets/feature-server.svg" alt=""></span><div><h3>No Server Setup</h3><p>Connect a standard HTML form without running your own backend or mail server.</p></div></article>
+          <article class="feature-card"><span class="tile-icon"><img src="/assets/feature-lock.svg" alt=""></span><div><h3>Email Privacy</h3><p>Keep your receiving email address out of public form code with a unique Form ID.</p></div></article>
+          <article class="feature-card"><span class="tile-icon"><img src="/assets/feature-verified.svg" alt=""></span><div><h3>Verified Recipients</h3><p>Verify your receiving address before form delivery starts.</p></div></article>
+          <article class="feature-card"><span class="tile-icon"><img src="/assets/setup-code.svg" alt=""></span><div><h3>Simple HTML Integration</h3><p>Use an ordinary HTML form action with the generated endpoint.</p></div></article>
+        </div>
+      </section>
+      <section class="section setup" aria-labelledby="setup-title">
+        <div class="section-head"><h2 id="setup-title">Get connected</h2><p>Three steps. No complex setup, no server to maintain.</p></div>
+        <ol class="setup-grid">
+          <li><span class="step-number">01</span><span class="tile-icon"><img src="/assets/setup-email.svg" alt=""></span><h3>Enter Your Email</h3><p>Provide your receiving address to request a Form ID.</p></li>
+          <li><span class="step-number">02</span><span class="tile-icon"><img src="/assets/setup-shield.svg" alt=""></span><h3>Verify &amp; Activate</h3><p>Click the activation link sent to your receiving address.</p></li>
+          <li><span class="step-number">03</span><span class="tile-icon"><img src="/assets/setup-code.svg" alt=""></span><h3>Embed HTML</h3><p>Paste the generated form code into your website.</p></li>
+        </ol>
+      </section>
+      <section class="section connect" id="connect" aria-labelledby="connect-title">
+        <div class="connect-banner"><div><h2 id="connect-title">Ready to receive website enquiries?</h2><p>Connect your website forms with a private Form ID.</p></div><a class="button primary" href="#generator">Get Your Form ID <span class="button-arrow"><img src="/assets/arrow.svg" alt=""></span></a></div>
+        <div class="generator" id="generator">
+          <div class="generator-intro">
+            <span class="eyebrow">Website integration</span>
+            <h2>Connect your form</h2>
+            <p>Enter the address that should receive submissions. We send it an activation link and give you HTML to paste into your site.</p>
+            <ol class="generator-steps"><li>Request a Form ID</li><li>Click the activation email</li><li>Copy the HTML below into your page</li></ol>
+          </div>
+          <div class="generator-panel">
+            <div id="generator-error" class="alert-error" role="alert"{{ERROR_HIDDEN}}>{{ERROR}}</div>
+            <form id="generator-form" action="/api/forms" method="POST">
+              <label for="email-input">Receiving email address</label>
+              <div class="input-row"><input type="email" id="email-input" name="email" placeholder="you@company.com" value="{{EMAIL}}" required autocomplete="email"><button class="button primary" type="submit" id="submit-btn">Generate Form ID</button></div>
+              <p class="form-note">Your address is never shown in the generated HTML.</p>
+            </form>
+            <div id="result-container" class="result"{{RESULT_HIDDEN}}>
+              <div class="notice" role="status"><strong>Check your inbox.</strong> An activation link has been sent to your receiving address. Submissions sent before activation are held and delivered once you activate.</div>
+              <dl class="result-fields">
+                <div><dt>Form ID</dt><dd><code id="form-id">{{FORM_ID}}</code><button type="button" class="copy-btn" data-copy="form-id">Copy</button></dd></div>
+                <div><dt>Form action URL</dt><dd><code id="action-url">{{ACTION_URL}}</code><button type="button" class="copy-btn" data-copy="action-url">Copy</button></dd></div>
+                <div class="secret"><dt>Management key <small>(save it — shown once, needed to deactivate this form)</small></dt><dd><code id="management-token">{{MANAGEMENT_TOKEN}}</code><button type="button" class="copy-btn" data-copy="management-token">Copy</button></dd></div>
+              </dl>
+            </div>
+          </div>
+          <div class="embed" id="embed">
+            <div class="embed-head">
+              <div><h3>Embed HTML</h3><p id="embed-status">{{EMBED_STATUS}}</p></div>
+              <div class="tabs" role="tablist" aria-label="Snippet type">
+                <button type="button" role="tab" id="tab-basic" aria-selected="true" aria-controls="snippet-basic">Contact form</button>
+                <button type="button" role="tab" id="tab-files" aria-selected="false" aria-controls="snippet-files" tabindex="-1">With PDF uploads</button>
+              </div>
+            </div>
+            <div class="code-wrap" id="snippet-basic" role="tabpanel" aria-labelledby="tab-basic">
+              <button type="button" class="copy-btn code-copy" data-copy="snippet-basic-code">Copy code</button>
+              <pre><code id="snippet-basic-code">{{SNIPPET}}</code></pre>
+            </div>
+            <div class="code-wrap" id="snippet-files" role="tabpanel" aria-labelledby="tab-files" hidden>
+              <button type="button" class="copy-btn code-copy" data-copy="snippet-files-code">Copy code</button>
+              <pre><code id="snippet-files-code">{{ATTACHMENT_SNIPPET}}</code></pre>
+            </div>
+            <ul class="embed-notes">
+              <li>Keep the <code>action</code>, <code>method="POST"</code> and the hidden <code>_honey</code> field. Rename or add other fields freely — every field is included in the email.</li>
+              <li>Uploads must use <code>enctype="multipart/form-data"</code> and the field name <code>attachments</code>: PDF only, up to 5 files, 10&nbsp;MB total.</li>
+              <li>Optional: add <code>&lt;input type="hidden" name="_next" value="https://your-site/thanks"&gt;</code> to redirect after submission.</li>
+            </ul>
+            <span id="copy-status" class="copy-status" role="status"></span>
+          </div>
+        </div>
+      </section>
+    </main>
+    <footer><a class="brand" href="#top"><img class="brand-logo" src="/assets/logo.svg" alt="" width="24" height="24"> Raxo Forms</a><div><a href="#features">Features</a><a href="#how-it-works">How it works</a><a href="#generator">Integration</a></div><small>Raxo Forms · forms.raxo.email</small></footer>
+  </div>
+</body>
+</html>

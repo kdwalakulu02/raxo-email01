@@ -4,6 +4,18 @@ Rust implementation of the Raxo Email backend (Tokio, axum, sqlx/PostgreSQL, let
 RaxoSentinel is the only scanner (ClamAV is not used) and is reached over its Unix socket.
 RaxoSentinel is an external, pinned component; its source is not part of this repository.
 
+## Public frontend
+
+The `forms.raxo.email` site is plain HTML/CSS/vanilla JS in [`web/`](web/), compiled into `raxo-api`
+with `include_bytes!` (no runtime files, no build tool). Edit `web/index.html`, `web/styles.css`,
+`web/app.js` or `web/assets/*`, then release as usual.
+
+- `web/index.html` is rendered by `views::render_generator_page`; `{{KEY}}` placeholders are filled
+  in a single pass with HTML-escaped values.
+- `GET /assets/{name}` serves only the files listed in [`src/web.rs`](src/web.rs); add new assets there.
+- The generator posts to `POST /api/forms` (JSON). The response includes `html_snippet` and
+  `attachment_snippet` (PDF-upload variant) for the copyable embed code.
+
 ## Pinned RaxoSentinel
 
 | Item            | Value |

@@ -3,8 +3,8 @@ use crate::captcha::{verify_captcha, CaptchaOptions, TURNSTILE_ENDPOINT};
 use crate::config::{AppConfig, FormConfig, FormField, FormFieldType};
 use crate::errors::{AppError, Result};
 use crate::forms::{
-    create_dynamic_form_in_tx, deactivate_dynamic_form, generate_html_snippet, get_dynamic_form_by_public_id,
-    resend_verification_in_tx, verify_dynamic_form,
+    create_dynamic_form_in_tx, deactivate_dynamic_form, generate_attachment_snippet, generate_html_snippet,
+    get_dynamic_form_by_public_id, resend_verification_in_tx, verify_dynamic_form,
 };
 use crate::input::{parse_submission, ParsedInput};
 use crate::outbox::{enqueue_system_message, SystemMessage};
@@ -209,6 +209,7 @@ pub fn build_router(state: Shared) -> Router {
         .route("/health/live", get(live))
         .route("/health/ready", get(ready))
         .route("/", get(index))
+        .route("/assets/{name}", get(static_asset))
         .route("/test", get(test_page))
         .route("/api/forms", post(register_form))
         .route("/verify", get(verify_get).post(verify_post))
@@ -287,6 +288,18 @@ async fn ready_check(s: &Shared) -> std::result::Result<(), String> {
 
 async fn index(State(s): State<Shared>, headers: HeaderMap) -> Response {
     html_resp(200, render_generator_page(&base_url(&headers, &s.config), None))
+}
+
+async fn static_asset(Path(name): Path<String>) -> Response {
+    let Some((mime, bytes)) = crate::web::asset(&name) else {
+        return not_found().await;
+    };
+    let mut r = Response::new(Body::from(bytes));
+    let h = r.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=86400"));
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    r
 }
 
 async fn test_page(State(s): State<Shared>, headers: HeaderMap) -> Response {
@@ -453,6 +466,7 @@ async fn register_form(
             "form_id": form_id,
             "action_url": format!("{base}/f/{form_id}"),
             "html_snippet": generate_html_snippet(&base, form_id),
+            "attachment_snippet": generate_attachment_snippet(&base, form_id),
             "management_token": created.management_token,
             "message": "Form created successfully. An activation email has been queued for delivery.",
         }),

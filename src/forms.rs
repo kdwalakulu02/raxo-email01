@@ -297,3 +297,28 @@ pub fn generate_html_snippet(base_url: &str, form_id: &str) -> String {
 </form>"#
     )
 }
+
+pub fn generate_attachment_snippet(base_url: &str, form_id: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    format!(
+        r#"<form action="{base}/f/{form_id}" method="POST" enctype="multipart/form-data">
+  <label for="name">Your Name</label>
+  <input type="text" id="name" name="name" required placeholder="Alex Smith">
+
+  <label for="email">Your Email</label>
+  <input type="email" id="email" name="email" required placeholder="alex@example.com">
+
+  <label for="message">Message</label>
+  <textarea id="message" name="message" rows="4" required placeholder="Hello..."></textarea>
+
+  <!-- PDF only: up to 5 files, 10 MB total. Files are scanned before delivery. -->
+  <label for="attachments">Attach PDF</label>
+  <input type="file" id="attachments" name="attachments" accept="application/pdf" multiple>
+
+  <!-- Spam prevention: honeypot field (hidden from real users) -->
+  <input type="text" name="_honey" style="display:none" tabindex="-1" autocomplete="off">
+
+  <button type="submit">Send Message</button>
+</form>"#
+    )
+}

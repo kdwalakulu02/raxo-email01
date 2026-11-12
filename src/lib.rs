@@ -20,6 +20,7 @@ pub mod sentinel;
 pub mod smtp;
 pub mod storage;
 pub mod views;
+pub mod web;
 pub mod worker;
 
 pub fn init_tracing() {
