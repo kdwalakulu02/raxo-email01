@@ -1,9 +1,10 @@
+use crate::dkim::Dkim;
 use crate::errors::{AppError, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 pub const RESERVED_FIELD_NAMES: &[&str] = &[
     "attachments",
@@ -57,6 +58,14 @@ pub enum SmtpTlsMode {
     StarttlsRequired,
 }
 
+/// `Relay`: submit everything to SMTP_HOST:SMTP_PORT. `Direct`: deliver to the
+/// recipient domain's MX hosts on port 25 (no relay).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryMode {
+    Relay,
+    Direct,
+}
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub node_env: String,
@@ -71,6 +80,12 @@ pub struct AppConfig {
     pub smtp_username: Option<String>,
     pub smtp_password: Option<String>,
     pub smtp_max_message_bytes: u64,
+    pub smtp_delivery_mode: DeliveryMode,
+    pub smtp_helo_name: Option<String>,
+    pub smtp_direct_port: u16,
+    pub smtp_direct_ipv4_only: bool,
+    /// Loaded and validated at startup when DKIM_PRIVATE_KEY_PATH is set.
+    pub dkim: Option<Arc<Dkim>>,
     pub message_id_domain: String,
     pub captcha_secret: Option<String>,
     pub demo_mode: bool,
@@ -249,6 +264,57 @@ pub fn load_config(env: &HashMap<String, String>, custom_forms_path: Option<&str
     let smtp_username = get("SMTP_USERNAME").map(str::trim).filter(|s| !s.is_empty()).map(String::from);
     let smtp_password = get("SMTP_PASSWORD").filter(|s| !s.is_empty()).map(String::from);
     let smtp_max_message_bytes: u64 = get("SMTP_MAX_MESSAGE_BYTES").unwrap_or("20971520").parse().unwrap_or(20_971_520);
+    let nonempty = |k: &str| get(k).map(str::trim).filter(|s| !s.is_empty()).map(String::from);
+    let smtp_delivery_mode = match nonempty("SMTP_DELIVERY_MODE").as_deref() {
+        None | Some("relay") => DeliveryMode::Relay,
+        Some("direct") => DeliveryMode::Direct,
+        Some(other) => {
+            return Err(AppError::config(
+                "bad_request",
+                format!("Invalid SMTP_DELIVERY_MODE: {other} (expected relay or direct)"),
+            ))
+        }
+    };
+    let smtp_helo_name = nonempty("SMTP_HELO_NAME");
+    if let Some(h) = &smtp_helo_name {
+        let ok = h.len() <= 253
+            && h.contains('.')
+            && h.split('.')
+                .all(|l| !l.is_empty() && l.len() <= 63 && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
+        if !ok {
+            return Err(AppError::config("bad_request", format!("Invalid SMTP_HELO_NAME: {h} (expected a FQDN)")));
+        }
+    }
+    if smtp_delivery_mode == DeliveryMode::Direct && smtp_helo_name.is_none() {
+        return Err(AppError::config("bad_request", "SMTP_DELIVERY_MODE=direct requires SMTP_HELO_NAME"));
+    }
+    let smtp_direct_port: u16 = match nonempty("SMTP_DIRECT_PORT") {
+        None => 25,
+        Some(s) => s
+            .parse()
+            .ok()
+            .filter(|p| *p >= 1)
+            .ok_or_else(|| AppError::config("bad_request", format!("Invalid SMTP_DIRECT_PORT: {s}")))?,
+    };
+    let smtp_direct_ipv4_only = match nonempty("SMTP_DIRECT_IPV4_ONLY").as_deref() {
+        None | Some("true") => true,
+        Some("false") => false,
+        Some(s) => return Err(AppError::config("bad_request", format!("Invalid SMTP_DIRECT_IPV4_ONLY: {s}"))),
+    };
+    let dkim = match (nonempty("DKIM_PRIVATE_KEY_PATH"), nonempty("DKIM_DOMAIN"), nonempty("DKIM_SELECTOR")) {
+        (None, None, None) => None,
+        (Some(path), Some(domain), Some(selector)) => {
+            let d = Dkim::load(&domain, &selector, std::path::Path::new(&path))
+                .map_err(|e| AppError::config("bad_request", format!("DKIM configuration invalid: {e}")))?;
+            Some(Arc::new(d))
+        }
+        _ => {
+            return Err(AppError::config(
+                "bad_request",
+                "DKIM requires all of DKIM_DOMAIN, DKIM_SELECTOR and DKIM_PRIVATE_KEY_PATH",
+            ))
+        }
+    };
     let message_id_domain = get("MESSAGE_ID_DOMAIN").unwrap_or("notifications.example.test").to_string();
     let captcha_secret = get("CAPTCHA_SECRET").map(str::trim).filter(|s| !s.is_empty()).map(String::from);
     let demo_mode = get("DEMO_MODE") == Some("true");
@@ -303,6 +369,9 @@ pub fn load_config(env: &HashMap<String, String>, custom_forms_path: Option<&str
                 format!("DEMO_MODE=true requires loopback HOST (127.0.0.1 or ::1), got: {host}"),
             ));
         }
+        if smtp_delivery_mode == DeliveryMode::Direct {
+            return Err(AppError::config("forbidden", "DEMO_MODE=true forbids SMTP_DELIVERY_MODE=direct"));
+        }
         if !is_loopback_smtp(&smtp_host) {
             return Err(AppError::config(
                 "forbidden",
@@ -315,7 +384,7 @@ pub fn load_config(env: &HashMap<String, String>, custom_forms_path: Option<&str
     }
 
     if is_prod {
-        if smtp_tls_mode == SmtpTlsMode::PlainLocal {
+        if smtp_delivery_mode == DeliveryMode::Relay && smtp_tls_mode == SmtpTlsMode::PlainLocal {
             return Err(AppError::config("forbidden", "Production rejects plain_local SMTP_TLS_MODE"));
         }
         if ip_hash_secret.trim().is_empty() {
@@ -363,6 +432,11 @@ pub fn load_config(env: &HashMap<String, String>, custom_forms_path: Option<&str
         smtp_username,
         smtp_password,
         smtp_max_message_bytes,
+        smtp_delivery_mode,
+        smtp_helo_name,
+        smtp_direct_port,
+        smtp_direct_ipv4_only,
+        dkim,
         message_id_domain,
         captcha_secret,
         demo_mode,

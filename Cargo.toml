@@ -54,6 +54,9 @@ thiserror = "2"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 webpki-roots = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+mail-auth = { version = "0.15", default-features = false, features = ["rust-crypto", "dns-hickory"] }
+hickory-resolver = "0.26"
+rsa = { version = "0.9", features = ["pem"] }
 
 [dev-dependencies]
 tempfile = "3"
@@ -63,3 +66,10 @@ lto = "thin"
 codegen-units = 4
 strip = true
 panic = "unwind"
+
+# RSA key generation/signing is very slow unoptimized; keep debug builds and tests fast.
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
+
+[profile.dev.package.rsa]
+opt-level = 3

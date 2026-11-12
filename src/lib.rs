@@ -3,6 +3,7 @@ pub mod captcha;
 pub mod cli;
 pub mod config;
 pub mod db;
+pub mod dkim;
 pub mod errors;
 pub mod forms;
 pub mod http;

@@ -262,9 +262,8 @@ pub async fn env(o: EnvOpts) -> Env {
             host: "127.0.0.1".into(),
             port: smtp.port,
             tls_mode: SmtpTlsMode::PlainLocal,
-            username: None,
-            password: None,
             timeout: Duration::from_secs(5),
+            ..Default::default()
         },
         sentinel: client,
         max_mime_bytes: 10 * 1024 * 1024,
