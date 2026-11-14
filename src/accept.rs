@@ -48,6 +48,8 @@ pub fn compute_fingerprint(fields: &BTreeMap<String, Option<String>>, atts: &[St
     hex::encode(Sha256::digest(serde_json::to_string(&payload).unwrap().as_bytes()))
 }
 
+const HELD_UNVERIFIED: &str = "held_unverified";
+
 fn delete_staged(storage: &Storage, atts: &[StagedAttachment]) {
     for a in atts {
         let _ = storage.delete(&a.storage_key, None);
@@ -116,7 +118,13 @@ pub async fn accept_submission(
     let res =
         insert_all(pool, parsed, form, &fingerprint, submission_id, notification_id, &message_id, initial_state).await;
     match res {
-        Ok(Some(r)) => Ok(r),
+        Ok(Some(r)) => {
+            if initial_state == HELD_UNVERIFIED {
+                // Nothing is kept for a form that may never be verified; only the names are recorded.
+                delete_staged(storage, &parsed.attachments);
+            }
+            Ok(r)
+        }
         Ok(None) => {
             // concurrent insert with the same client id won the race
             let existing: Option<ExistingRow> = sqlx::query_as(
@@ -176,10 +184,16 @@ async fn insert_all(
         tx.rollback().await.ok();
         return Ok(None);
     }
+    let held = state == HELD_UNVERIFIED;
     for a in &parsed.attachments {
         sqlx::query(
-            "INSERT INTO attachments (id, submission_id, storage_key, original_name, size_bytes, sha256, scan_state, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, 'pending', now())",
+            "INSERT INTO attachments (id, submission_id, storage_key, original_name, size_bytes, sha256, scan_state,
+               delivery_disposition, withheld_category, disposition_reason, disposition_at, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, 'pending',
+               CASE WHEN $7 THEN 'withheld' ELSE 'pending' END,
+               CASE WHEN $7 THEN 'not_retained' END,
+               CASE WHEN $7 THEN 'form_unverified' END,
+               CASE WHEN $7 THEN now() END, now())",
         )
         .bind(a.id)
         .bind(submission_id)
@@ -187,6 +201,7 @@ async fn insert_all(
         .bind(&a.original_name)
         .bind(a.size_bytes as i64)
         .bind(&a.sha256)
+        .bind(held)
         .execute(&mut *tx)
         .await?;
     }

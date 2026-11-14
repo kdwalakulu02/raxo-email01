@@ -55,7 +55,7 @@ inspected; the reasons are stored in `scan_results.incomplete`. Withheld files a
 delivered MIME is stored immutably, so retries re-send the same message and cannot deliver a withheld file.
 `ATTACHMENT_POLICY=block_message` restores whole-message blocking.
 `ATTACHMENT_SCAN_RETRIES` (0–4) adds delayed re-scans for transient scanner failures before withholding.
-Dispositions are recorded in `attachments` (migrations `005`, `007`), verdicts in `scan_results`.
+Dispositions are recorded in `attachments` (migrations `005`, `007`, `008`), verdicts in `scan_results`.
 
 ### File retention
 
@@ -63,7 +63,9 @@ Attachment and MIME files are kept only while they are needed; senders can resub
 
 - Attachment files (clean and quarantined, included and withheld) are deleted as soon as the notification's
   MIME message is persisted, or when the notification ends without one (blocked, cancelled, failed).
-  Files of `held_unverified` submissions are kept until verification (or the 7-day cleanup).
+- Uploads to a form that is not verified yet (`held_unverified`) are deleted at submission time and
+  recorded as withheld `not_retained` (migration `008`). After verification the email is delivered with a
+  note listing those files and asking the sender to send them again. Nothing is kept for held submissions.
 - The MIME file is kept while the notification can still be sent or retried (`queued`, `retry_wait`,
   `preparing`, `submitting`) and deleted, with `mime_key`/`mime_sha256` cleared, once it is terminal
   (`submitted`, `unknown`, `failed`, `blocked`, `cancelled`), for every kind of submission.

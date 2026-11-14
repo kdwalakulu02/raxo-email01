@@ -91,8 +91,8 @@ pub const TERMINAL_STATES: &[&str] = &["submitted", "unknown", "failed", "blocke
 /// - the MIME file of a terminal notification (and its `mime_key`/`mime_sha256`).
 ///
 /// Nothing is removed while a notification can still need it: `queued`, `retry_wait`, `preparing`
-/// and `submitting` keep their MIME, and `held_unverified` (or any notification without MIME) keeps
-/// the attachment files. Attachment deletion failures are logged; a MIME deletion failure is returned.
+/// and `submitting` keep their MIME, and a notification without MIME keeps its attachment files.
+/// (`held_unverified` submissions never have files: see [`discard_held_attachments`].) Attachment deletion failures are logged; a MIME deletion failure is returned.
 pub async fn cleanup_notification_files(pool: &PgPool, storage: &Storage, notification_id: Uuid) -> Result<()> {
     let mut tx = pool.begin().await?;
     let row: Option<(Uuid, String, Option<String>)> =
@@ -138,6 +138,7 @@ pub async fn cleanup_notification_files(pool: &PgPool, storage: &Storage, notifi
 /// storage access): MIME of terminal notifications and attachment files still on disk whose
 /// notification has a persisted MIME or is terminal.
 pub async fn cleanup_unneeded_files(pool: &PgPool, storage: &Storage) -> Result<()> {
+    discard_held_attachments(pool, storage).await?;
     let mut ids: Vec<Uuid> =
         sqlx::query_scalar("SELECT id FROM notifications WHERE mime_key IS NOT NULL AND state = ANY($1)")
             .bind(TERMINAL_STATES)
@@ -161,6 +162,32 @@ pub async fn cleanup_unneeded_files(pool: &PgPool, storage: &Storage) -> Result<
     for id in ids {
         if let Err(e) = cleanup_notification_files(pool, storage, id).await {
             tracing::error!(notification_id = %id, error = %e.message, "notification file cleanup failed");
+        }
+    }
+    Ok(())
+}
+
+/// Uploads to a form that is not verified are not kept. New submissions are recorded as withheld
+/// `not_retained` at accept time; this also converts rows accepted before that rule (or whose staged
+/// file deletion failed) and deletes their files. Only metadata stays; the email says to resend.
+pub async fn discard_held_attachments(pool: &PgPool, storage: &Storage) -> Result<()> {
+    sqlx::query(
+        "UPDATE attachments a SET delivery_disposition = 'withheld', withheld_category = 'not_retained',
+           disposition_reason = 'form_unverified', disposition_at = now()
+         FROM notifications n WHERE n.submission_id = a.submission_id AND n.state = 'held_unverified'
+           AND a.delivery_disposition = 'pending'",
+    )
+    .execute(pool)
+    .await?;
+    let keys: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT a.storage_key FROM attachments a JOIN notifications n ON n.submission_id = a.submission_id
+         WHERE n.state = 'held_unverified' AND a.withheld_category = 'not_retained'",
+    )
+    .fetch_all(pool)
+    .await?;
+    for key in keys {
+        if let Err(e) = storage.delete(&key, None) {
+            tracing::error!(key = %key, error = %e.message, "failed to delete held attachment file");
         }
     }
     Ok(())

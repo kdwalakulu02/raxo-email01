@@ -40,7 +40,8 @@ async fn migrations_apply_once_and_are_idempotent_with_checksums() {
             "004_scan_results",
             "005_attachment_disposition",
             "006_outbound_capacity",
-            "007_partial_inspection"
+            "007_partial_inspection",
+            "008_not_retained"
         ]
     );
     let again = raxo_email::db::run_migrations(&pool).await.unwrap();

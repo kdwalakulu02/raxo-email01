@@ -160,6 +160,8 @@ pub enum WithheldCategory {
     NotInspected,
     /// Blocked by the file-type policy (executables, scripts, disk images, macro documents).
     Policy,
+    /// Uploaded while the form was not verified; the file was discarded at submission time.
+    NotRetained,
 }
 
 impl WithheldCategory {
@@ -168,6 +170,7 @@ impl WithheldCategory {
             WithheldCategory::Flagged => "flagged",
             WithheldCategory::NotInspected => "not_inspected",
             WithheldCategory::Policy => "policy",
+            WithheldCategory::NotRetained => "not_retained",
         }
     }
 }

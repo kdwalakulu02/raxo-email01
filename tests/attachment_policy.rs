@@ -416,7 +416,7 @@ async fn attachment_files_are_removed_after_mime_build_and_mime_after_terminal_s
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn retention_sweep_removes_stragglers_but_keeps_files_of_held_unverified() {
+async fn retention_sweep_removes_stragglers_and_discards_files_of_held_unverified() {
     let e = env(EnvOpts::default()).await;
     let held = seed(&e, "held", &[("held.pdf", CLEAN)]).await;
     let cancelled = seed(&e, "cancelled", &[("c.pdf", CLEAN)]).await;
@@ -438,13 +438,57 @@ async fn retention_sweep_removes_stragglers_but_keeps_files_of_held_unverified()
     }
     raxo_email::retention::run_retention(&e.pool, &e.storage, chrono::Utc::now()).await.unwrap();
 
-    for key in storage_keys(&e, held.submission_id).await {
-        assert!(e.storage.exists(&key, Some(Area::Quarantine)), "held_unverified files are needed until verified");
-    }
+    assert_attachment_files_purged(&e, held.submission_id).await;
+    let rows = att_rows(&e, held.submission_id).await;
+    assert_eq!((rows[0].disposition.as_str(), rows[0].category.as_deref()), ("withheld", Some("not_retained")));
     assert_attachment_files_purged(&e, cancelled.submission_id).await;
     assert_attachment_files_purged(&e, built.submission_id).await;
     assert!(!e.storage.exists(&mime, Some(Area::Mime)));
     assert_eq!(mime_key(&e, built.notification_id).await, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn uploads_to_unverified_form_are_discarded_and_email_after_verification_asks_to_resend() {
+    use raxo_email::input::{ParsedInput, StagedAttachment};
+    let e = env(EnvOpts::default()).await;
+    let created = raxo_email::forms::create_dynamic_form(&e.pool, Some("owner@example.test")).await.unwrap();
+    let mut w = e.storage.begin_stage(10 * 1024 * 1024).await.unwrap();
+    w.write(CLEAN).await.unwrap();
+    let staged = w.finish().await.unwrap();
+    let parsed = ParsedInput {
+        submission_id: Uuid::new_v4(),
+        client_submission_id: None,
+        fields: [("message".to_string(), Some("my application".to_string()))].into_iter().collect(),
+        is_honeypot: false,
+        captcha_token: None,
+        attachments: vec![StagedAttachment {
+            id: Uuid::new_v4(),
+            storage_key: staged.key.clone(),
+            original_name: "cv.pdf".into(),
+            size_bytes: staged.size_bytes,
+            sha256: staged.sha256.clone(),
+        }],
+    };
+    let mut f = form();
+    f.id = created.form_id.clone();
+    raxo_email::accept::accept_submission(&parsed, &f, &e.pool, &e.storage, "raxo.test", "held_unverified")
+        .await
+        .unwrap();
+
+    assert!(!e.storage.exists(&staged.key, None), "nothing is kept for an unverified form");
+    let rows = att_rows(&e, parsed.submission_id).await;
+    assert_eq!((rows[0].disposition.as_str(), rows[0].category.as_deref()), ("withheld", Some("not_retained")));
+
+    let verified = raxo_email::forms::verify_dynamic_form(&e.pool, &created.verification_token).await.unwrap();
+    assert_eq!(verified.promoted, 1);
+    assert_eq!(run_once(&e).await.unwrap().outcome.as_deref(), Some("submitted"));
+    let msg = only_message(&e);
+    assert!(attached_filenames(&msg).is_empty());
+    assert_not_leaked(&msg, CLEAN);
+    let text = plain_body(&msg);
+    assert!(text.contains("my application"));
+    assert!(text.contains("Ask the sender to send them again (1):\r\n  - cv.pdf"), "{text}");
+    assert_eq!(e.sentinel.as_ref().unwrap().scans.load(std::sync::atomic::Ordering::SeqCst), 0, "no scan");
 }
 
 #[tokio::test(flavor = "multi_thread")]

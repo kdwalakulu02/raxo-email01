@@ -275,6 +275,7 @@ async fn process_claimed(
             let category = match att.withheld_category.as_deref() {
                 Some("flagged") => WithheldCategory::Flagged,
                 Some("policy") => WithheldCategory::Policy,
+                Some("not_retained") => WithheldCategory::NotRetained,
                 _ => WithheldCategory::NotInspected,
             };
             withheld.push(WithheldAttachment { filename: att.original_name.clone(), category });

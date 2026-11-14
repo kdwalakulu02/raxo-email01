@@ -80,6 +80,7 @@ struct Notice {
     flagged: Vec<String>,
     policy: Vec<String>,
     not_inspected: Vec<String>,
+    not_retained: Vec<String>,
     partial: Vec<String>,
 }
 
@@ -97,13 +98,14 @@ impl Notice {
             flagged: pick(WithheldCategory::Flagged),
             policy: pick(WithheldCategory::Policy),
             not_inspected: pick(WithheldCategory::NotInspected),
+            not_retained: pick(WithheldCategory::NotRetained),
             partial,
         })
     }
 
     /// Number of withheld attachments.
     fn total(&self) -> usize {
-        self.flagged.len() + self.policy.len() + self.not_inspected.len()
+        self.flagged.len() + self.policy.len() + self.not_inspected.len() + self.not_retained.len()
     }
 
     fn headline(&self) -> String {
@@ -127,15 +129,17 @@ impl Notice {
     const POLICY_LABEL: &'static str = "Not accepted by this form's file-type policy (executables, scripts, disk images and macro-enabled documents are not delivered)";
     const NOT_INSPECTED_LABEL: &'static str =
         "Could not be inspected, so withheld as a precaution (this does not mean the file is malicious)";
+    const NOT_RETAINED_LABEL: &'static str = "Not kept: this form had not been verified yet when the message was sent, so uploaded files were discarded. Ask the sender to send them again";
     const PARTIAL_LABEL: &'static str = "Delivered, but could only be partially inspected by the security scanner (for example a very large or unusual document). Treat it with normal caution.";
     const ADVICE: &'static str =
         "If you were expecting these files, please contact the sender through another trusted channel or ask your administrator to review them.";
 
-    fn sections(&self) -> [(&'static str, &Vec<String>); 4] {
+    fn sections(&self) -> [(&'static str, &Vec<String>); 5] {
         [
             (Self::FLAGGED_LABEL, &self.flagged),
             (Self::POLICY_LABEL, &self.policy),
             (Self::NOT_INSPECTED_LABEL, &self.not_inspected),
+            (Self::NOT_RETAINED_LABEL, &self.not_retained),
             (Self::PARTIAL_LABEL, &self.partial),
         ]
     }
