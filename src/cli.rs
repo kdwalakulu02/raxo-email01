@@ -505,6 +505,10 @@ async fn export_attachment(
         eprintln!("Error: Attachment has been deleted.");
         return Ok(3);
     }
+    if !storage.exists(&key, Some(Area::Clean)) && !storage.exists(&key, Some(Area::Quarantine)) {
+        eprintln!("Error: Attachment content is not retained after the notification is built.");
+        return Ok(3);
+    }
     let fresh = state == "clean" && scanned_at.map(|t| (Utc::now() - t).num_hours() <= 48).unwrap_or(false);
     if !fresh {
         let content = match storage.read(&key, None) {

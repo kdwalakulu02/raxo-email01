@@ -82,18 +82,48 @@ pub async fn enqueue_system_message(
     Ok(notification_id)
 }
 
-pub async fn cleanup_system_mime(pool: &PgPool, storage: &Storage, notification_id: Uuid) -> Result<()> {
+/// Notification states that are never prepared, sent or retried again.
+pub const TERMINAL_STATES: &[&str] = &["submitted", "unknown", "failed", "blocked", "cancelled"];
+
+/// Removes files that are no longer needed for a notification (any submission kind):
+/// - attachment files (clean and quarantine) once no notification of the submission still needs to
+///   build its MIME, i.e. each one has a persisted MIME or is terminal;
+/// - the MIME file of a terminal notification (and its `mime_key`/`mime_sha256`).
+///
+/// Nothing is removed while a notification can still need it: `queued`, `retry_wait`, `preparing`
+/// and `submitting` keep their MIME, and `held_unverified` (or any notification without MIME) keeps
+/// the attachment files. Attachment deletion failures are logged; a MIME deletion failure is returned.
+pub async fn cleanup_notification_files(pool: &PgPool, storage: &Storage, notification_id: Uuid) -> Result<()> {
     let mut tx = pool.begin().await?;
-    let key: Option<(Option<String>,)> = sqlx::query_as(
-        "SELECT n.mime_key FROM notifications n JOIN submissions s ON s.id = n.submission_id
-         WHERE n.id = $1 AND s.kind = 'system'
-           AND n.state IN ('submitted','unknown','failed','blocked','cancelled')
-         FOR UPDATE OF n",
+    let row: Option<(Uuid, String, Option<String>)> =
+        sqlx::query_as("SELECT submission_id, state, mime_key FROM notifications WHERE id = $1 FOR UPDATE")
+            .bind(notification_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some((submission_id, state, mime_key)) = row else { return Ok(()) };
+    let terminal = TERMINAL_STATES.contains(&state.as_str());
+    let attachments_needed: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM notifications WHERE submission_id = $1 AND mime_key IS NULL
+           AND state <> ALL($2))",
     )
-    .bind(notification_id)
-    .fetch_optional(&mut *tx)
+    .bind(submission_id)
+    .bind(TERMINAL_STATES)
+    .fetch_one(&mut *tx)
     .await?;
-    if let Some((Some(key),)) = key {
+    if !attachments_needed {
+        let keys: Vec<String> = sqlx::query_scalar("SELECT storage_key FROM attachments WHERE submission_id = $1")
+            .bind(submission_id)
+            .fetch_all(&mut *tx)
+            .await?;
+        for key in keys {
+            for area in [Area::Clean, Area::Quarantine] {
+                if let Err(e) = storage.delete(&key, Some(area)) {
+                    tracing::error!(key = %key, error = %e.message, "failed to delete attachment file");
+                }
+            }
+        }
+    }
+    if let (true, Some(key)) = (terminal, mime_key) {
         storage.delete(&key, Some(Area::Mime))?;
         sqlx::query("UPDATE notifications SET mime_key = NULL, mime_sha256 = NULL WHERE id = $1")
             .bind(notification_id)
@@ -104,17 +134,33 @@ pub async fn cleanup_system_mime(pool: &PgPool, storage: &Storage, notification_
     Ok(())
 }
 
-pub async fn cleanup_terminal_system_mimes(pool: &PgPool, storage: &Storage) -> Result<()> {
-    let ids: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT n.id FROM notifications n JOIN submissions s ON s.id = n.submission_id
-         WHERE s.kind = 'system' AND n.mime_key IS NOT NULL
-           AND n.state IN ('submitted','unknown','failed','blocked','cancelled')",
-    )
-    .fetch_all(pool)
-    .await?;
+/// Retention sweep for files missed by the inline cleanup (crashes, cancellations made without
+/// storage access): MIME of terminal notifications and attachment files still on disk whose
+/// notification has a persisted MIME or is terminal.
+pub async fn cleanup_unneeded_files(pool: &PgPool, storage: &Storage) -> Result<()> {
+    let mut ids: Vec<Uuid> =
+        sqlx::query_scalar("SELECT id FROM notifications WHERE mime_key IS NOT NULL AND state = ANY($1)")
+            .bind(TERMINAL_STATES)
+            .fetch_all(pool)
+            .await?;
+    let mut on_disk = storage.list_keys(Area::Clean);
+    on_disk.extend(storage.list_keys(Area::Quarantine));
+    if !on_disk.is_empty() {
+        let more: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT DISTINCT n.id FROM attachments a JOIN notifications n ON n.submission_id = a.submission_id
+             WHERE a.storage_key = ANY($1) AND (n.mime_key IS NOT NULL OR n.state = ANY($2))",
+        )
+        .bind(&on_disk)
+        .bind(TERMINAL_STATES)
+        .fetch_all(pool)
+        .await?;
+        ids.extend(more);
+    }
+    ids.sort();
+    ids.dedup();
     for id in ids {
-        if let Err(e) = cleanup_system_mime(pool, storage, id).await {
-            tracing::error!(notification_id = %id, error = %e.message, "system message cleanup failed");
+        if let Err(e) = cleanup_notification_files(pool, storage, id).await {
+            tracing::error!(notification_id = %id, error = %e.message, "notification file cleanup failed");
         }
     }
     Ok(())

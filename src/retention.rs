@@ -17,7 +17,7 @@ pub struct RetentionResult {
 
 pub async fn run_retention(pool: &PgPool, storage: &Storage, reference: DateTime<Utc>) -> Result<RetentionResult> {
     let mut out = RetentionResult::default();
-    crate::outbox::cleanup_terminal_system_mimes(pool, storage).await?;
+    crate::outbox::cleanup_unneeded_files(pool, storage).await?;
     let seven = reference - CDuration::days(7);
     let ninety = reference - CDuration::days(90);
 

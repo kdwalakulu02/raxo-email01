@@ -37,7 +37,6 @@ struct SubmissionRow {
     config_snapshot: Option<serde_json::Value>,
     created_at: DateTime<Utc>,
     deleted_at: Option<DateTime<Utc>>,
-    kind: String,
 }
 
 #[derive(Debug, FromRow)]
@@ -206,15 +205,29 @@ pub async fn process_notification(
     deps: &QueueDeps,
     is_owner: &(dyn Fn() -> bool + Send + Sync),
 ) -> Result<ProcessResult> {
+    let result = process_claimed(notif, token, deps, is_owner).await?;
+    // Removes the MIME of a terminal notification and attachment files that are no longer
+    // needed; a no-op while the notification can still be prepared or retried.
+    if let Err(e) = crate::outbox::cleanup_notification_files(&deps.pool, &deps.storage, notif.id).await {
+        tracing::error!(notification_id = %notif.id, error = %e.message, "notification file cleanup failed");
+    }
+    Ok(result)
+}
+
+async fn process_claimed(
+    notif: &Notification,
+    token: Uuid,
+    deps: &QueueDeps,
+    is_owner: &(dyn Fn() -> bool + Send + Sync),
+) -> Result<ProcessResult> {
     let pool = &deps.pool;
     let storage = &deps.storage;
 
-    let sub: Option<SubmissionRow> = sqlx::query_as(
-        "SELECT id, fields, config_snapshot, created_at, deleted_at, kind FROM submissions WHERE id = $1",
-    )
-    .bind(notif.submission_id)
-    .fetch_optional(pool)
-    .await?;
+    let sub: Option<SubmissionRow> =
+        sqlx::query_as("SELECT id, fields, config_snapshot, created_at, deleted_at FROM submissions WHERE id = $1")
+            .bind(notif.submission_id)
+            .fetch_optional(pool)
+            .await?;
     let Some(sub) = sub.filter(|s| s.deleted_at.is_none()) else {
         sqlx::query(
             "UPDATE notifications SET state = 'cancelled', lease_token = NULL, lease_expires_at = NULL,
@@ -261,6 +274,7 @@ pub async fn process_notification(
         if att.delivery_disposition == "withheld" {
             let category = match att.withheld_category.as_deref() {
                 Some("flagged") => WithheldCategory::Flagged,
+                Some("policy") => WithheldCategory::Policy,
                 _ => WithheldCategory::NotInspected,
             };
             withheld.push(WithheldAttachment { filename: att.original_name.clone(), category });
@@ -288,7 +302,18 @@ pub async fn process_notification(
             && in_clean
             && att.scanned_at.map(|t| (Utc::now() - t).num_milliseconds() <= 48 * 3600 * 1000).unwrap_or(false);
         let mut content = content;
-        if !fresh_clean {
+        let partial;
+        if fresh_clean {
+            // Reuse the partial-inspection note of the scan that made this attachment clean.
+            let incomplete: Option<Option<String>> = sqlx::query_scalar(
+                "SELECT incomplete FROM scan_results WHERE attachment_id = $1 AND scanner = 'raxosentinel'
+                   AND shadow = false AND verdict = 'CLEAN' ORDER BY created_at DESC LIMIT 1",
+            )
+            .bind(att.id)
+            .fetch_optional(pool)
+            .await?;
+            partial = incomplete.flatten().is_some();
+        } else {
             let rec = deps.sentinel.scan(content.clone(), &actual, &att.id.to_string()).await;
             if let Err(e) = record_scan_result(pool, att.id, notif.id, &rec).await {
                 tracing::error!(error = %e, "failed to record scan result (delivery policy unaffected)");
@@ -302,7 +327,8 @@ pub async fn process_notification(
                 generation = rec.database_generation.as_deref().unwrap_or(""),
             );
             match disposition_of(&rec) {
-                Disposition::Deliver { version } => {
+                Disposition::Deliver { version, partial: incomplete } => {
+                    partial = incomplete;
                     if !mark_clean(pool, storage, notif.id, token, att.id, &att.storage_key, &version).await? {
                         return res("aborted", "ownership_lost_or_attachment_changed".to_string());
                     }
@@ -317,7 +343,7 @@ pub async fn process_notification(
                         if transient && notif.prepare_failures < deps.scan_retries {
                             return scanner_retry(pool, notif, token, "scanner_error").await;
                         }
-                        let scan_state = if category == WithheldCategory::Flagged { "blocked" } else { "error" };
+                        let scan_state = if category == WithheldCategory::NotInspected { "error" } else { "blocked" };
                         if !set_withheld(deps, notif.id, token, att, scan_state, category, &reason).await? {
                             return res("aborted", "ownership_lost_or_attachment_changed".to_string());
                         }
@@ -343,7 +369,7 @@ pub async fn process_notification(
             }
         }
         included_ids.push(att.id);
-        scanned.push(NotificationAttachment { filename: att.original_name.clone(), content });
+        scanned.push(NotificationAttachment { filename: att.original_name.clone(), content, partial });
     }
 
     // Build or reuse the immutable MIME message.
@@ -407,6 +433,11 @@ pub async fn process_notification(
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
+        // The MIME is now the only copy needed for delivery and retries; drop the attachment
+        // files (included and withheld) of this submission.
+        if let Err(e) = crate::outbox::cleanup_notification_files(pool, storage, notif.id).await {
+            tracing::error!(notification_id = %notif.id, error = %e.message, "attachment file cleanup failed");
+        }
     }
 
     // preparing -> submitting compare-and-swap before any network I/O
@@ -430,12 +461,7 @@ pub async fn process_notification(
     {
         SubmitStart::Started(slot) => slot,
         SubmitStart::Deferred => return res("throttled", None),
-        SubmitStart::Expired => {
-            if sub.kind == "system" {
-                crate::outbox::cleanup_system_mime(pool, storage, notif.id).await?;
-            }
-            return res("failed", "message_expired".to_string());
-        }
+        SubmitStart::Expired => return res("failed", "message_expired".to_string()),
         SubmitStart::Aborted => return res("aborted", "lease_lost_or_deleted".to_string()),
     };
     if !is_owner() {
@@ -457,11 +483,6 @@ pub async fn process_notification(
     };
     if !record_outcome(pool, notif, token, attempt_id, attempt_no, &result, &deps.capacity, &form.recipient).await? {
         return res("aborted", "lease_lost_during_smtp".to_string());
-    }
-    if sub.kind == "system" && !matches!(result, SubmitResult::SafeRetry(_)) {
-        if let Err(e) = crate::outbox::cleanup_system_mime(pool, storage, notif.id).await {
-            tracing::error!(notification_id = %notif.id, error = %e.message, "system message cleanup failed");
-        }
     }
     let kind = match result {
         SubmitResult::Submitted { .. } => "submitted",

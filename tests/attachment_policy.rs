@@ -2,10 +2,32 @@ mod common;
 
 use common::*;
 use raxo_email::config::AttachmentPolicy;
+use raxo_email::storage::Area;
+use uuid::Uuid;
 
 const CLEAN: &[u8] = b"%PDF-1.4 harmless quarterly report body";
 const EICAR_PDF: &[u8] = b"%PDF-1.4 EICAR-STANDARD-ANTIVIRUS-TEST-FILE payload-bytes-AAAA";
 const SUSPECT_PDF: &[u8] = b"%PDF-1.4 SUSPECT javascript launcher payload-bytes-BBBB";
+
+async fn storage_keys(e: &Env, sid: Uuid) -> Vec<String> {
+    sqlx::query_scalar("SELECT storage_key FROM attachments WHERE submission_id = $1")
+        .bind(sid)
+        .fetch_all(&e.pool)
+        .await
+        .unwrap()
+}
+
+/// No attachment file of the submission is left in the clean or quarantine area.
+async fn assert_attachment_files_purged(e: &Env, sid: Uuid) {
+    for key in storage_keys(e, sid).await {
+        assert!(!e.storage.exists(&key, Some(Area::Clean)), "clean attachment file must be removed");
+        assert!(!e.storage.exists(&key, Some(Area::Quarantine)), "quarantined attachment file must be removed");
+    }
+}
+
+async fn mime_key(e: &Env, nid: Uuid) -> Option<String> {
+    sqlx::query_scalar("SELECT mime_key FROM notifications WHERE id = $1").bind(nid).fetch_one(&e.pool).await.unwrap()
+}
 
 fn only_message(e: &Env) -> Vec<u8> {
     let m = e.smtp.messages.lock().unwrap();
@@ -58,9 +80,8 @@ async fn file_promoted_before_a_failed_commit_is_rescanned() {
         assert_eq!(!attached_filenames(&msg).is_empty(), included);
         if !included {
             assert_not_leaked(&msg, content);
-            assert!(e.storage.exists(&key, Some(raxo_email::storage::Area::Quarantine)));
-            assert!(!e.storage.exists(&key, Some(raxo_email::storage::Area::Clean)));
         }
+        assert!(!e.storage.exists(&key, None), "attachment files are not kept after the MIME is built");
     }
 }
 
@@ -103,14 +124,8 @@ async fn one_suspicious_attachment_is_withheld_and_email_still_delivered() {
         ("blocked", "withheld", Some("flagged"))
     );
     assert_eq!(verdicts(&e, s.submission_id).await, vec![("invoice.pdf".to_string(), "DETECTED".to_string())]);
-    // The withheld file stays in quarantine and is never promoted to the clean area.
-    let key: String = sqlx::query_scalar("SELECT storage_key FROM attachments WHERE submission_id = $1")
-        .bind(s.submission_id)
-        .fetch_one(&e.pool)
-        .await
-        .unwrap();
-    assert!(e.storage.exists(&key, Some(raxo_email::storage::Area::Quarantine)));
-    assert!(!e.storage.exists(&key, Some(raxo_email::storage::Area::Clean)));
+    // The withheld file is never promoted to the clean area and is not kept once the MIME exists.
+    assert_attachment_files_purged(&e, s.submission_id).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -197,6 +212,15 @@ async fn scanner_timeout_and_unscanned_and_error_verdicts_are_withheld_not_inspe
     for r in att_rows(&e, s.submission_id).await {
         assert_eq!((r.disposition.as_str(), r.category.as_deref()), ("withheld", Some("not_inspected")));
     }
+    let boom_error: Option<String> = sqlx::query_scalar(
+        "SELECT r.error FROM scan_results r JOIN attachments a ON a.id = r.attachment_id
+         WHERE a.submission_id = $1 AND a.original_name = 'boom.pdf'",
+    )
+    .bind(s.submission_id)
+    .fetch_one(&e.pool)
+    .await
+    .unwrap();
+    assert_eq!(boom_error.as_deref(), Some("internal_failure"), "an empty reported hash must keep the real error");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -298,6 +322,12 @@ async fn retries_resend_identical_mime_and_never_deliver_withheld() {
 
     make_due(&e, s.notification_id).await;
     assert_eq!(run_once(&e).await.unwrap().outcome.as_deref(), Some("safe_retry"));
+    let sha2: String = sqlx::query_scalar("SELECT mime_sha256 FROM notifications WHERE id = $1")
+        .bind(s.notification_id)
+        .fetch_one(&e.pool)
+        .await
+        .unwrap();
+    assert_eq!(sha1, sha2, "the persisted MIME is immutable across retries");
     make_due(&e, s.notification_id).await;
     assert_eq!(run_once(&e).await.unwrap().outcome.as_deref(), Some("submitted"));
 
@@ -306,12 +336,6 @@ async fn retries_resend_identical_mime_and_never_deliver_withheld() {
         scans_after_first,
         "retries must not rescan or re-decide"
     );
-    let sha2: String = sqlx::query_scalar("SELECT mime_sha256 FROM notifications WHERE id = $1")
-        .bind(s.notification_id)
-        .fetch_one(&e.pool)
-        .await
-        .unwrap();
-    assert_eq!(sha1, sha2, "the persisted MIME is immutable across retries");
 
     let msg = only_message(&e);
     assert_eq!(attached_filenames(&msg), vec!["good.pdf"]);
@@ -324,10 +348,10 @@ async fn retries_resend_identical_mime_and_never_deliver_withheld() {
 #[tokio::test(flavor = "multi_thread")]
 async fn rebuild_after_lost_mime_keeps_withheld_sticky_without_rescan() {
     let e = env(EnvOpts { smtp: SmtpMode::TempFailFirst(1), ..Default::default() }).await;
-    let s = seed(&e, "rebuild", &[("good.pdf", CLEAN), ("bad.pdf", EICAR_PDF)]).await;
+    let s = seed(&e, "rebuild", &[("bad.pdf", EICAR_PDF)]).await;
     run_once(&e).await.unwrap();
     let scans = e.sentinel.as_ref().unwrap().scans.load(std::sync::atomic::Ordering::SeqCst);
-    assert_eq!(scans, 2);
+    assert_eq!(scans, 1);
 
     // Simulate a crash that lost the persisted MIME pointer, and a scanner that is now down/changed.
     sqlx::query("UPDATE notifications SET mime_key = NULL, mime_sha256 = NULL WHERE id = $1")
@@ -340,9 +364,156 @@ async fn rebuild_after_lost_mime_keeps_withheld_sticky_without_rescan() {
 
     assert_eq!(e.sentinel.as_ref().unwrap().scans.load(std::sync::atomic::Ordering::SeqCst), scans);
     let msg = only_message(&e);
-    assert_eq!(attached_filenames(&msg), vec!["good.pdf"]);
+    assert!(attached_filenames(&msg).is_empty());
     assert_not_leaked(&msg, EICAR_PDF);
     assert!(plain_body(&msg).contains("bad.pdf"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rebuild_after_lost_mime_fails_closed_once_attachment_files_are_purged() {
+    let e = env(EnvOpts { smtp: SmtpMode::TempFailFirst(1), ..Default::default() }).await;
+    let s = seed(&e, "rebuild", &[("good.pdf", CLEAN), ("bad.pdf", EICAR_PDF)]).await;
+    run_once(&e).await.unwrap();
+    let scans = e.sentinel.as_ref().unwrap().scans.load(std::sync::atomic::Ordering::SeqCst);
+    sqlx::query("UPDATE notifications SET mime_key = NULL, mime_sha256 = NULL WHERE id = $1")
+        .bind(s.notification_id)
+        .execute(&e.pool)
+        .await
+        .unwrap();
+    make_due(&e, s.notification_id).await;
+    assert_eq!(run_once(&e).await.unwrap().outcome.as_deref(), Some("attachment_integrity_error"));
+    assert_eq!(notif_state(&e, s.notification_id).await, "failed");
+    assert_eq!(e.sentinel.as_ref().unwrap().scans.load(std::sync::atomic::Ordering::SeqCst), scans);
+    assert!(e.smtp.messages.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn attachment_files_are_removed_after_mime_build_and_mime_after_terminal_state() {
+    let e = env(EnvOpts { smtp: SmtpMode::TempFailFirst(1), ..Default::default() }).await;
+    let s = seed(&e, "purge", &[("good.pdf", CLEAN), ("bad.pdf", EICAR_PDF)]).await;
+    assert_eq!(run_once(&e).await.unwrap().outcome.as_deref(), Some("safe_retry"));
+    assert_attachment_files_purged(&e, s.submission_id).await;
+    // The MIME must survive while the notification can still be retried.
+    let key = mime_key(&e, s.notification_id).await.expect("MIME kept for retries");
+    assert!(e.storage.exists(&key, Some(Area::Mime)));
+
+    make_due(&e, s.notification_id).await;
+    assert_eq!(run_once(&e).await.unwrap().outcome.as_deref(), Some("submitted"));
+    assert_eq!(attached_filenames(&only_message(&e)), vec!["good.pdf"]);
+    assert!(!e.storage.exists(&key, Some(Area::Mime)), "terminal MIME must be removed");
+    assert_eq!(mime_key(&e, s.notification_id).await, None);
+    let mime_sha: Option<String> = sqlx::query_scalar("SELECT mime_sha256 FROM notifications WHERE id = $1")
+        .bind(s.notification_id)
+        .fetch_one(&e.pool)
+        .await
+        .unwrap();
+    assert_eq!(mime_sha, None);
+    // Metadata stays.
+    let rows = att_rows(&e, s.submission_id).await;
+    assert_eq!(rows.iter().find(|r| r.name == "good.pdf").unwrap().disposition, "delivered");
+    assert_eq!(rows.iter().find(|r| r.name == "bad.pdf").unwrap().category.as_deref(), Some("flagged"));
+    assert_eq!(verdicts(&e, s.submission_id).await.len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn retention_sweep_removes_stragglers_but_keeps_files_of_held_unverified() {
+    let e = env(EnvOpts::default()).await;
+    let held = seed(&e, "held", &[("held.pdf", CLEAN)]).await;
+    let cancelled = seed(&e, "cancelled", &[("c.pdf", CLEAN)]).await;
+    let built = seed(&e, "built", &[("b.pdf", CLEAN)]).await;
+    let (mime, digest) = e.storage.persist_mime(b"Subject: straggler\r\n\r\nbody\r\n").unwrap();
+    for (id, state, key) in [
+        (held.notification_id, "held_unverified", None),
+        (cancelled.notification_id, "cancelled", None),
+        (built.notification_id, "submitted", Some(&mime)),
+    ] {
+        sqlx::query("UPDATE notifications SET state = $1, mime_key = $2, mime_sha256 = $3 WHERE id = $4")
+            .bind(state)
+            .bind(key)
+            .bind(key.map(|_| &digest))
+            .bind(id)
+            .execute(&e.pool)
+            .await
+            .unwrap();
+    }
+    raxo_email::retention::run_retention(&e.pool, &e.storage, chrono::Utc::now()).await.unwrap();
+
+    for key in storage_keys(&e, held.submission_id).await {
+        assert!(e.storage.exists(&key, Some(Area::Quarantine)), "held_unverified files are needed until verified");
+    }
+    assert_attachment_files_purged(&e, cancelled.submission_id).await;
+    assert_attachment_files_purged(&e, built.submission_id).await;
+    assert!(!e.storage.exists(&mime, Some(Area::Mime)));
+    assert_eq!(mime_key(&e, built.notification_id).await, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exporting_a_purged_attachment_reports_it_is_not_retained() {
+    let e = env(EnvOpts::default()).await;
+    let s = seed(&e, "export", &[("good.pdf", CLEAN)]).await;
+    assert_eq!(run_once(&e).await.unwrap().outcome.as_deref(), Some("submitted"));
+    let scans = e.sentinel.as_ref().unwrap().scans.load(std::sync::atomic::Ordering::SeqCst);
+    let out = e._dir.path().join("exported.pdf");
+    let id = s.attachments[0].0.to_string();
+    let output = run_cli(&e, &["attachments", "export", &id, "--out", out.to_str().unwrap()]).await;
+    assert_eq!(output.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("Attachment content is not retained after the notification is built"));
+    assert!(!out.exists());
+    assert_eq!(e.sentinel.as_ref().unwrap().scans.load(std::sync::atomic::Ordering::SeqCst), scans, "no scan");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn partially_inspected_clean_is_delivered_with_note_and_policy_files_are_withheld() {
+    let e = env(EnvOpts::default()).await;
+    let s = seed(
+        &e,
+        "partial",
+        &[("huge.pdf", b"%PDF-1.4 PARTIAL many objects"), ("setup.exe", b"MZ POLICYEXE stub"), ("ok.pdf", CLEAN)],
+    )
+    .await;
+    assert_eq!(run_once(&e).await.unwrap().outcome.as_deref(), Some("submitted"));
+    let msg = only_message(&e);
+    assert_eq!(attached_filenames(&msg), vec!["huge.pdf", "ok.pdf"]);
+    assert_not_leaked(&msg, b"MZ POLICYEXE stub");
+    assert!(headers(&msg).contains("X-Raxo-Attachments-Withheld: 1"));
+    assert!(headers(&msg).contains("X-Raxo-Attachments-Partially-Inspected: 1"));
+    let text = plain_body(&msg);
+    assert!(text.contains("SECURITY NOTICE: 1 attachment was withheld"));
+    assert!(text.contains("Not accepted by this form's file-type policy (executables, scripts, disk images and macro-enabled documents are not delivered) (1):\r\n  - setup.exe"));
+    assert!(text.contains("Delivered, but could only be partially inspected by the security scanner (for example a very large or unusual document). Treat it with normal caution. (1):\r\n  - huge.pdf"));
+    assert!(!text.contains("Flagged by the security scanner"));
+    let html = html_body(&msg);
+    assert!(html.contains("file-type policy") && html.contains("<li>setup.exe</li>"));
+    assert!(html.contains("partially inspected") && html.contains("<li>huge.pdf</li>"));
+
+    let rows = att_rows(&e, s.submission_id).await;
+    let by = |n: &str| rows.iter().find(|r| r.name == n).unwrap();
+    assert_eq!(by("huge.pdf").disposition, "delivered");
+    assert_eq!(
+        (
+            by("setup.exe").scan_state.as_str(),
+            by("setup.exe").disposition.as_str(),
+            by("setup.exe").category.as_deref()
+        ),
+        ("blocked", "withheld", Some("policy"))
+    );
+    let incomplete: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT a.original_name, r.incomplete FROM scan_results r JOIN attachments a ON a.id = r.attachment_id
+         WHERE a.submission_id = $1 ORDER BY a.original_name",
+    )
+    .bind(s.submission_id)
+    .fetch_all(&e.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        incomplete,
+        vec![
+            ("huge.pdf".into(), Some("too_many_pdf_objects".into())),
+            ("ok.pdf".into(), None),
+            ("setup.exe".into(), None)
+        ]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -369,6 +540,8 @@ async fn block_message_policy_keeps_legacy_whole_message_block() {
     assert_eq!(r.status, "blocked");
     assert_eq!(notif_state(&e, s.notification_id).await, "blocked");
     assert!(e.smtp.messages.lock().unwrap().is_empty(), "nothing is delivered under block_message");
+    assert_attachment_files_purged(&e, s.submission_id).await;
+    assert!(e.storage.list_keys(Area::Mime).is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]

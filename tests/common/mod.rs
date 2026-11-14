@@ -144,8 +144,9 @@ pub async fn start_smtp(mode: SmtpMode) -> FakeSmtp {
 // ---------------- fake Sentinel coordinator ----------------
 
 /// Verdict is chosen from markers inside the scanned bytes.
-/// EICAR/MALWARE -> DETECTED, SUSPECT -> SUSPICIOUS, UNSCAN -> UNSCANNED, BOOM -> ERROR,
-/// HANG -> never answers, anything else CLEAN.
+/// EICAR/MALWARE -> DETECTED, POLICYEXE -> SUSPICIOUS (Policy.*), SUSPECT -> SUSPICIOUS,
+/// UNSCAN -> UNSCANNED, BOOM -> ERROR, HANG -> never answers, PARTIAL -> CLEAN with `incomplete`,
+/// anything else CLEAN.
 pub struct FakeSentinel {
     pub socket: PathBuf,
     pub scans: Arc<AtomicUsize>,
@@ -214,8 +215,11 @@ pub fn start_sentinel(dir: &Path) -> FakeSentinel {
                         return;
                     }
                 }
+                let mut incomplete: Vec<&str> = vec![];
                 let (status, threats, err) = if has(b"EICAR") || has(b"MALWARE") {
                     ("DETECTED", vec![serde_json::json!({"name": "Test.Signature.Fake"})], None)
+                } else if has(b"POLICYEXE") {
+                    ("SUSPICIOUS", vec![serde_json::json!({"name": "Policy.Executable.PE"})], None)
                 } else if has(b"SUSPECT") {
                     ("SUSPICIOUS", vec![], None)
                 } else if has(b"UNSCAN") {
@@ -223,11 +227,17 @@ pub fn start_sentinel(dir: &Path) -> FakeSentinel {
                 } else if has(b"BOOM") {
                     ("ERROR", vec![], Some("internal_failure"))
                 } else {
+                    if has(b"PARTIAL") {
+                        incomplete.push("too_many_pdf_objects");
+                    }
                     ("CLEAN", vec![], None)
                 };
+                // Like the real coordinator, an ERROR report carries an empty target hash.
+                let target_sha = if status == "ERROR" { String::new() } else { sha(&data) };
                 let body = serde_json::json!({
                     "status": status,
-                    "report": {"engine_version": "fake-1.0", "target": {"sha256": sha(&data)}, "threats": threats},
+                    "report": {"engine_version": "fake-1.0", "target": {"sha256": target_sha}, "threats": threats,
+                               "incomplete": incomplete},
                     "error": err,
                     "database_generation": "gen-test",
                 });
@@ -435,6 +445,29 @@ pub async fn verdicts(e: &Env, sid: Uuid) -> Vec<(String, String)> {
     .fetch_all(&e.pool)
     .await
     .unwrap()
+}
+
+// ---------------- CLI ----------------
+
+pub async fn database_url(e: &Env) -> String {
+    let db: String = sqlx::query_scalar("SELECT current_database()").fetch_one(&e.pool).await.unwrap();
+    format!("{}/{}", admin_url().rsplit_once('/').unwrap().0, db)
+}
+
+pub async fn run_cli(e: &Env, args: &[&str]) -> std::process::Output {
+    let forms = e._dir.path().join("cli-forms.json");
+    std::fs::write(&forms, r#"{"version":1,"forms":[]}"#).unwrap();
+    std::process::Command::new(env!("CARGO_BIN_EXE_raxo-cli"))
+        .env_clear()
+        .env("DATABASE_URL", database_url(e).await)
+        .env("FORMS_CONFIG_PATH", forms)
+        .env("STORAGE_DIR", e.storage.root())
+        .env("SMTP_HOST", "127.0.0.1")
+        .env("SMTP_PORT", e.smtp.port.to_string())
+        .env("SMTP_NODE_ID", "test-node")
+        .args(args)
+        .output()
+        .unwrap()
 }
 
 // ---------------- MIME inspection ----------------

@@ -38,18 +38,41 @@ and is therefore withheld by the attachment policy (`not_inspected`), even if co
 
 Each attachment is scanned independently and gets its own decision (`ATTACHMENT_POLICY=withhold`, default):
 
-| Sentinel verdict                       | Disposition | Category        |
-| -------------------------------------- | ----------- | --------------- |
-| CLEAN                                  | included    | –               |
-| DETECTED, SUSPICIOUS                   | withheld    | `flagged`       |
-| UNSCANNED, ERROR, BUSY, TIMEOUT        | withheld    | `not_inspected` |
+| Sentinel verdict                                     | Disposition           | Category        |
+| ---------------------------------------------------- | --------------------- | --------------- |
+| CLEAN                                                | included              | –               |
+| CLEAN with `incomplete` reasons (partial inspection) | included, with a note | –               |
+| DETECTED, SUSPICIOUS, all threats named `Policy.*`   | withheld              | `policy`        |
+| DETECTED, SUSPICIOUS (any other threat)              | withheld              | `flagged`       |
+| UNSCANNED, ERROR, BUSY, TIMEOUT                      | withheld              | `not_inspected` |
 
 The message body and permitted attachments are still delivered, with a plain-text/HTML security notice
-(count, escaped original filenames, flagged vs. could-not-be-inspected). Withheld files are never
-attached and stay in quarantine. The delivered MIME is stored immutably, so retries re-send the same
-message and cannot deliver a withheld file. `ATTACHMENT_POLICY=block_message` restores whole-message blocking.
+(count, escaped original filenames, flagged vs. blocked by the file-type policy vs. could-not-be-inspected).
+`policy` covers what the scanner reports as `Policy.*` (executables, scripts, disk images, macro-enabled
+Office documents). A CLEAN verdict whose report lists `incomplete` reasons (RaxoSentinel v2, e.g. too many
+PDF objects or an unsupported stream encoding) is delivered, and the notice lists it as only partially
+inspected; the reasons are stored in `scan_results.incomplete`. Withheld files are never attached. The
+delivered MIME is stored immutably, so retries re-send the same message and cannot deliver a withheld file.
+`ATTACHMENT_POLICY=block_message` restores whole-message blocking.
 `ATTACHMENT_SCAN_RETRIES` (0–4) adds delayed re-scans for transient scanner failures before withholding.
-Dispositions are recorded in `attachments` (migration `005`), verdicts in `scan_results`.
+Dispositions are recorded in `attachments` (migrations `005`, `007`), verdicts in `scan_results`.
+
+### File retention
+
+Attachment and MIME files are kept only while they are needed; senders can resubmit.
+
+- Attachment files (clean and quarantined, included and withheld) are deleted as soon as the notification's
+  MIME message is persisted, or when the notification ends without one (blocked, cancelled, failed).
+  Files of `held_unverified` submissions are kept until verification (or the 7-day cleanup).
+- The MIME file is kept while the notification can still be sent or retried (`queued`, `retry_wait`,
+  `preparing`, `submitting`) and deleted, with `mime_key`/`mime_sha256` cleared, once it is terminal
+  (`submitted`, `unknown`, `failed`, `blocked`, `cancelled`), for every kind of submission.
+- The hourly retention sweep removes any files missed by the inline cleanup.
+- Only database metadata stays: file name, size, SHA-256, verdict, disposition and `scan_results`.
+  Form fields still expire after 90 days.
+- `raxo-cli attachments export` fails with exit code 3 ("Attachment content is not retained after the
+  notification is built") once the file is gone. A notification whose MIME pointer is lost after the files
+  were removed fails closed with `attachment_integrity_error`; it is never rebuilt without its attachments.
 
 ## Outbound delivery and DKIM
 
@@ -118,8 +141,8 @@ domain on that node (initially 1 minute, then 5 minutes, 30 minutes and 2 hours)
 blocking unrelated domains. Safe failures are retried up to five total attempts; an
 ambiguous post-DATA outcome or an expired submitting lease becomes `unknown` and is
 never retried automatically. Inspect it before taking any manual action. Queued activation
-messages expire with their verification token, and their private MIME files are removed
-after terminal outcomes or by the retention sweep.
+messages expire with their verification token. Like every MIME file, theirs are removed
+after terminal outcomes or by the retention sweep (see [File retention](#file-retention)).
 
 Run these commands with the service's normal environment and database access:
 

@@ -78,6 +78,9 @@ struct Report {
     sub_targets: Vec<Report>,
     engine_version: Option<String>,
     target: Option<Target>,
+    /// RaxoSentinel v2: reasons why inspection was partial (verdict covers only what was inspected).
+    #[serde(default)]
+    incomplete: Vec<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -105,6 +108,10 @@ pub struct ScanRecord {
     pub shadow: bool,
     pub verdict: Verdict,
     pub detection: Option<String>,
+    /// Individual threat names behind `detection` (not truncated).
+    pub detections: Vec<String>,
+    /// Non-empty when the scanner could only partially inspect the content.
+    pub incomplete: Vec<String>,
     pub engine_version: Option<String>,
     pub database_generation: Option<String>,
     pub sha256: String,
@@ -151,6 +158,8 @@ pub fn outcome_of(rec: &ScanRecord) -> ScanOutcome {
 pub enum WithheldCategory {
     Flagged,
     NotInspected,
+    /// Blocked by the file-type policy (executables, scripts, disk images, macro documents).
+    Policy,
 }
 
 impl WithheldCategory {
@@ -158,6 +167,7 @@ impl WithheldCategory {
         match self {
             WithheldCategory::Flagged => "flagged",
             WithheldCategory::NotInspected => "not_inspected",
+            WithheldCategory::Policy => "policy",
         }
     }
 }
@@ -165,18 +175,31 @@ impl WithheldCategory {
 /// Per-attachment decision under the `withhold` policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Disposition {
-    Deliver { version: String },
-    Withhold { category: WithheldCategory, reason: String, transient: bool },
+    /// `partial`: CLEAN in everything inspected, but inspection was incomplete.
+    Deliver {
+        version: String,
+        partial: bool,
+    },
+    Withhold {
+        category: WithheldCategory,
+        reason: String,
+        transient: bool,
+    },
 }
 
 pub fn disposition_of(rec: &ScanRecord) -> Disposition {
     let reason = || rec.error.clone().unwrap_or_else(|| rec.verdict.as_str().to_lowercase());
     match rec.verdict {
-        Verdict::Clean => {
-            Disposition::Deliver { version: rec.engine_version.clone().unwrap_or_else(|| "raxosentinel".into()) }
-        }
+        Verdict::Clean => Disposition::Deliver {
+            version: rec.engine_version.clone().unwrap_or_else(|| "raxosentinel".into()),
+            partial: !rec.incomplete.is_empty(),
+        },
         Verdict::Detected | Verdict::Suspicious => Disposition::Withhold {
-            category: WithheldCategory::Flagged,
+            category: if !rec.detections.is_empty() && rec.detections.iter().all(|d| d.starts_with("Policy.")) {
+                WithheldCategory::Policy
+            } else {
+                WithheldCategory::Flagged
+            },
             reason: rec.detection.clone().unwrap_or_else(|| rec.verdict.as_str().to_lowercase()),
             transient: false,
         },
@@ -189,6 +212,46 @@ pub fn disposition_of(rec: &ScanRecord) -> Disposition {
             Disposition::Withhold { category: WithheldCategory::NotInspected, reason: reason(), transient: true }
         }
     }
+}
+
+/// Fills verdict and report details from a coordinator response into `r`.
+fn apply_response(resp: &CoordinatorResponse, expected_sha: &str, r: &mut ScanRecord) {
+    let error = resp.error.as_ref().map(|e| e.chars().take(500).collect::<String>());
+    r.database_generation = resp.database_generation.clone();
+    // An ERROR report carries an empty target hash; only a reported, non-empty hash is compared.
+    let reported = resp
+        .report
+        .as_ref()
+        .and_then(|x| x.target.as_ref())
+        .and_then(|t| t.sha256.as_deref())
+        .filter(|s| !s.is_empty());
+    if reported.is_some_and(|rs| rs.to_lowercase() != expected_sha) {
+        r.verdict = Verdict::Error;
+        r.error = Some(match &error {
+            Some(e) => format!("sentinel_scanned_sha256_mismatch: {e}").chars().take(500).collect(),
+            None => "sentinel_scanned_sha256_mismatch".into(),
+        });
+        return;
+    }
+    r.verdict = match resp.status.as_str() {
+        "CLEAN" => Verdict::Clean,
+        "DETECTED" => Verdict::Detected,
+        "SUSPICIOUS" => Verdict::Suspicious,
+        "UNSCANNED" => Verdict::Unscanned,
+        "BUSY" => Verdict::Busy,
+        _ => Verdict::Error,
+    };
+    let mut names = vec![];
+    if let Some(rep) = &resp.report {
+        collect_detections(rep, &mut names);
+        r.engine_version = rep.engine_version.clone();
+        r.incomplete = rep.incomplete.iter().map(|i| i.chars().take(200).collect()).collect();
+    }
+    if !names.is_empty() {
+        r.detection = Some(names.join(", ").chars().take(500).collect());
+    }
+    r.detections = names;
+    r.error = error;
 }
 
 #[derive(Clone)]
@@ -238,6 +301,8 @@ impl Sentinel {
                 shadow: false,
                 verdict,
                 detection: None,
+                detections: vec![],
+                incomplete: vec![],
                 engine_version: None,
                 database_generation: None,
                 sha256: String::new(),
@@ -271,37 +336,7 @@ impl Sentinel {
             Err(e) => Err((Verdict::Error, format!("sentinel_internal: {e}"))),
         };
         match result {
-            Ok(resp) => {
-                let mut names = vec![];
-                if let Some(rep) = &resp.report {
-                    collect_detections(rep, &mut names);
-                }
-                let verdict = match resp.status.as_str() {
-                    "CLEAN" => Verdict::Clean,
-                    "DETECTED" => Verdict::Detected,
-                    "SUSPICIOUS" => Verdict::Suspicious,
-                    "UNSCANNED" => Verdict::Unscanned,
-                    "BUSY" => Verdict::Busy,
-                    _ => Verdict::Error,
-                };
-                let reported = resp.report.as_ref().and_then(|r| r.target.as_ref()).and_then(|t| t.sha256.clone());
-                if let Some(rs) = reported {
-                    if rs.to_lowercase() != sha256 {
-                        return finish(mk(Verdict::Error, &|r| {
-                            r.database_generation = resp.database_generation.clone();
-                            r.error = Some("sentinel_scanned_sha256_mismatch".into());
-                        }));
-                    }
-                }
-                finish(mk(verdict, &|r| {
-                    if !names.is_empty() {
-                        r.detection = Some(names.join(", ").chars().take(500).collect());
-                    }
-                    r.engine_version = resp.report.as_ref().and_then(|x| x.engine_version.clone());
-                    r.database_generation = resp.database_generation.clone();
-                    r.error = resp.error.as_ref().map(|e| e.chars().take(500).collect());
-                }))
-            }
+            Ok(resp) => finish(mk(Verdict::Error, &|r| apply_response(&resp, sha256, r))),
             Err((verdict, msg)) => finish(mk(verdict, &|r| r.error = Some(msg.chars().take(500).collect()))),
         }
     }
@@ -455,8 +490,8 @@ pub async fn record_scan_result(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO scan_results (id, attachment_id, notification_id, scanner, shadow, verdict, detection,
-           engine_version, database_generation, sha256, size_bytes, duration_ms, error, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now())",
+           engine_version, database_generation, sha256, size_bytes, duration_ms, error, incomplete, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, now())",
     )
     .bind(Uuid::new_v4())
     .bind(attachment_id)
@@ -471,7 +506,91 @@ pub async fn record_scan_result(
     .bind(r.size_bytes)
     .bind(r.duration_ms)
     .bind(&r.error)
+    .bind((!r.incomplete.is_empty()).then(|| r.incomplete.join("; ")))
     .execute(pool)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(resp: serde_json::Value, expected_sha: &str) -> ScanRecord {
+        let resp: CoordinatorResponse = serde_json::from_value(resp).unwrap();
+        let mut r = ScanRecord {
+            scanner: "raxosentinel",
+            shadow: false,
+            verdict: Verdict::Clean,
+            detection: None,
+            detections: vec![],
+            incomplete: vec![],
+            engine_version: None,
+            database_generation: None,
+            sha256: expected_sha.into(),
+            size_bytes: 1,
+            duration_ms: 0,
+            error: None,
+        };
+        apply_response(&resp, expected_sha, &mut r);
+        r
+    }
+
+    #[test]
+    fn error_with_empty_reported_sha_keeps_the_coordinator_error() {
+        let r = record(
+            serde_json::json!({"status":"ERROR","report":{"target":{"sha256":""}},"error":"worker crashed"}),
+            "abc",
+        );
+        assert_eq!(r.verdict, Verdict::Error);
+        assert_eq!(r.error.as_deref(), Some("worker crashed"));
+    }
+
+    #[test]
+    fn real_sha_mismatch_is_an_error_that_keeps_the_coordinator_error() {
+        let r =
+            record(serde_json::json!({"status":"CLEAN","report":{"target":{"sha256":"def"}},"error":"note"}), "abc");
+        assert_eq!(r.verdict, Verdict::Error);
+        assert_eq!(r.error.as_deref(), Some("sentinel_scanned_sha256_mismatch: note"));
+        let r = record(serde_json::json!({"status":"CLEAN","report":{"target":{"sha256":"DEF"}}}), "abc");
+        assert_eq!(r.error.as_deref(), Some("sentinel_scanned_sha256_mismatch"));
+    }
+
+    #[test]
+    fn clean_with_incomplete_inspection_is_delivered_as_partial() {
+        let r = record(
+            serde_json::json!({"status":"CLEAN","report":{"target":{"sha256":"ABC"},"engine_version":"2.0",
+                "incomplete":["too_many_pdf_objects","unsupported_stream_encoding"]}}),
+            "abc",
+        );
+        assert_eq!(r.incomplete, vec!["too_many_pdf_objects", "unsupported_stream_encoding"]);
+        assert_eq!(disposition_of(&r), Disposition::Deliver { version: "2.0".into(), partial: true });
+        let full = record(serde_json::json!({"status":"CLEAN","report":{"target":{"sha256":"abc"}}}), "abc");
+        assert!(matches!(disposition_of(&full), Disposition::Deliver { partial: false, .. }));
+        let unscanned = record(
+            serde_json::json!({"status":"UNSCANNED","report":{"incomplete":["encrypted"]},"error":"encrypted"}),
+            "abc",
+        );
+        assert!(matches!(
+            disposition_of(&unscanned),
+            Disposition::Withhold { category: WithheldCategory::NotInspected, .. }
+        ));
+    }
+
+    #[test]
+    fn policy_only_detections_are_withheld_as_policy() {
+        let cat = |status: &str, threats: serde_json::Value| match disposition_of(&record(
+            serde_json::json!({"status":status,"report":{"threats":threats}}),
+            "abc",
+        )) {
+            Disposition::Withhold { category, .. } => category,
+            other => panic!("expected withhold, got {other:?}"),
+        };
+        let policy = serde_json::json!([{"name":"Policy.Executable.PE"},{"name":"Policy.Office.Macro"}]);
+        assert_eq!(cat("SUSPICIOUS", policy.clone()), WithheldCategory::Policy);
+        assert_eq!(cat("DETECTED", policy), WithheldCategory::Policy);
+        let mixed = serde_json::json!([{"name":"Policy.Script.JavaScript"},{"name":"Win.Trojan.Fake"}]);
+        assert_eq!(cat("SUSPICIOUS", mixed), WithheldCategory::Flagged);
+        assert_eq!(cat("SUSPICIOUS", serde_json::json!([])), WithheldCategory::Flagged);
+    }
 }

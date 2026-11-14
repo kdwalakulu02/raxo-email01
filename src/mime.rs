@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 pub struct NotificationAttachment {
     pub filename: String,
     pub content: Vec<u8>,
+    /// Delivered, but the scanner could only partially inspect it.
+    pub partial: bool,
 }
 
 /// An attachment that is NOT delivered. Only its name and category are carried here;
@@ -25,7 +27,7 @@ pub struct NotificationPayload<'a> {
     pub fields: &'a BTreeMap<String, Option<String>>,
     pub message_id: String,
     pub withheld: &'a [WithheldAttachment],
-    /// Adds a text/html alternative when a withheld-attachment notice is present.
+    /// Adds a text/html alternative when a security notice (withheld or partially inspected) is present.
     pub notice_html: bool,
 }
 
@@ -76,43 +78,75 @@ fn plural(n: usize) -> &'static str {
 
 struct Notice {
     flagged: Vec<String>,
+    policy: Vec<String>,
     not_inspected: Vec<String>,
+    partial: Vec<String>,
 }
 
 impl Notice {
-    fn new(withheld: &[WithheldAttachment]) -> Option<Self> {
-        if withheld.is_empty() {
-            return None;
-        }
+    fn new(withheld: &[WithheldAttachment], attachments: &[NotificationAttachment]) -> Option<Self> {
         let pick = |c: WithheldCategory| {
             withheld.iter().filter(|w| w.category == c).map(|w| display_filename(&w.filename)).collect::<Vec<_>>()
         };
-        Some(Self { flagged: pick(WithheldCategory::Flagged), not_inspected: pick(WithheldCategory::NotInspected) })
+        let partial: Vec<String> =
+            attachments.iter().filter(|a| a.partial).map(|a| display_filename(&a.filename)).collect();
+        if withheld.is_empty() && partial.is_empty() {
+            return None;
+        }
+        Some(Self {
+            flagged: pick(WithheldCategory::Flagged),
+            policy: pick(WithheldCategory::Policy),
+            not_inspected: pick(WithheldCategory::NotInspected),
+            partial,
+        })
     }
 
+    /// Number of withheld attachments.
     fn total(&self) -> usize {
-        self.flagged.len() + self.not_inspected.len()
+        self.flagged.len() + self.policy.len() + self.not_inspected.len()
     }
 
     fn headline(&self) -> String {
-        format!("SECURITY NOTICE: {} {} withheld", self.total(), plural(self.total()))
+        if self.total() > 0 {
+            format!("SECURITY NOTICE: {} {} withheld", self.total(), plural(self.total()))
+        } else {
+            format!("SECURITY NOTICE: {} {} only partially inspected", self.partial.len(), plural(self.partial.len()))
+        }
     }
 
     fn intro(&self) -> String {
         let n = self.total();
+        if n == 0 {
+            return "All attachments were delivered with this message, but the security scanner could not inspect everything in them.".into();
+        }
         let subject = if n == 1 { "1 attachment was".to_string() } else { format!("{n} attachments were") };
         format!("For your protection, {subject} not delivered with this message. The message itself and any other attachments are unchanged.")
     }
 
     const FLAGGED_LABEL: &'static str = "Flagged by the security scanner as potentially unsafe";
+    const POLICY_LABEL: &'static str = "Not accepted by this form's file-type policy (executables, scripts, disk images and macro-enabled documents are not delivered)";
     const NOT_INSPECTED_LABEL: &'static str =
         "Could not be inspected, so withheld as a precaution (this does not mean the file is malicious)";
+    const PARTIAL_LABEL: &'static str = "Delivered, but could only be partially inspected by the security scanner (for example a very large or unusual document). Treat it with normal caution.";
     const ADVICE: &'static str =
         "If you were expecting these files, please contact the sender through another trusted channel or ask your administrator to review them.";
 
+    fn sections(&self) -> [(&'static str, &Vec<String>); 4] {
+        [
+            (Self::FLAGGED_LABEL, &self.flagged),
+            (Self::POLICY_LABEL, &self.policy),
+            (Self::NOT_INSPECTED_LABEL, &self.not_inspected),
+            (Self::PARTIAL_LABEL, &self.partial),
+        ]
+    }
+
+    fn advice(&self) -> Option<&'static str> {
+        (self.total() > 0).then_some(Self::ADVICE)
+    }
+
     fn text(&self) -> Vec<String> {
         let mut l = vec![self.headline(), self.intro(), String::new()];
-        for (label, names) in [(Self::FLAGGED_LABEL, &self.flagged), (Self::NOT_INSPECTED_LABEL, &self.not_inspected)] {
+        for (label, names) in self.sections() {
             if names.is_empty() {
                 continue;
             }
@@ -122,7 +156,12 @@ impl Notice {
             }
             l.push(String::new());
         }
-        l.push(Self::ADVICE.into());
+        match self.advice() {
+            Some(a) => l.push(a.into()),
+            None => {
+                l.pop();
+            }
+        }
         l
     }
 
@@ -132,7 +171,7 @@ impl Notice {
             escape_html(&self.headline()),
             escape_html(&self.intro())
         );
-        for (label, names) in [(Self::FLAGGED_LABEL, &self.flagged), (Self::NOT_INSPECTED_LABEL, &self.not_inspected)] {
+        for (label, names) in self.sections() {
             if names.is_empty() {
                 continue;
             }
@@ -146,7 +185,10 @@ impl Notice {
             }
             h.push_str("</ul>");
         }
-        h.push_str(&format!("<p style=\"margin:8px 0 0\">{}</p></div>", escape_html(Self::ADVICE)));
+        if let Some(a) = self.advice() {
+            h.push_str(&format!("<p style=\"margin:8px 0 0\">{}</p>", escape_html(a)));
+        }
+        h.push_str("</div>");
         h
     }
 }
@@ -270,7 +312,7 @@ pub fn build_notification(
     attachments: &[NotificationAttachment],
     max_bytes: usize,
 ) -> Result<Vec<u8>> {
-    let notice = Notice::new(payload.withheld);
+    let notice = Notice::new(payload.withheld, attachments);
     let rule = "----------------------------------------";
     let mut lines: Vec<String> = vec!["Raxo Email Submission Notification".into(), rule.into()];
     if let Some(n) = &notice {
@@ -316,8 +358,11 @@ pub fn build_notification(
         encode_header_text(&header_clean(&format!("{} — {}", snapshot.subject_prefix, payload.submission_id)))
     ));
     m.push_str("MIME-Version: 1.0\r\n");
-    if let Some(n) = &notice {
+    if let Some(n) = notice.as_ref().filter(|n| n.total() > 0) {
         m.push_str(&format!("X-Raxo-Attachments-Withheld: {}\r\n", n.total()));
+    }
+    if let Some(n) = notice.as_ref().filter(|n| !n.partial.is_empty()) {
+        m.push_str(&format!("X-Raxo-Attachments-Partially-Inspected: {}\r\n", n.partial.len()));
     }
 
     // With a notice, the human-readable body becomes text/plain + escaped text/html alternatives.
@@ -376,4 +421,44 @@ pub fn build_system_message(from: &str, to: &str, subject: &str, text: &str, htm
     m.push_str(&format!("--{b}\r\n{}", text_part(html, "text/html")));
     m.push_str(&format!("--{b}--\r\n"));
     m.into_bytes()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn att(name: &str, partial: bool) -> NotificationAttachment {
+        NotificationAttachment { filename: name.into(), content: b"%PDF".to_vec(), partial }
+    }
+
+    #[test]
+    fn no_notice_without_withheld_or_partial_attachments() {
+        assert!(Notice::new(&[], &[att("a.pdf", false)]).is_none());
+    }
+
+    #[test]
+    fn partial_only_notice_has_its_own_headline_and_escapes_names() {
+        let n = Notice::new(&[], &[att("<b>big</b>.pdf", true), att("ok.pdf", false)]).unwrap();
+        assert_eq!(n.headline(), "SECURITY NOTICE: 1 attachment was only partially inspected");
+        let text = n.text().join("\n");
+        assert!(text.contains(&format!("{} (1):\n  - <b>big</b>.pdf", Notice::PARTIAL_LABEL)));
+        assert!(!text.contains("ok.pdf") && !text.contains("withheld") && !text.contains(Notice::ADVICE));
+        let html = n.html();
+        assert!(html.contains("<strong>SECURITY NOTICE: 1 attachment was only partially inspected</strong>"));
+        assert!(html.contains("<li>&lt;b&gt;big&lt;/b&gt;.pdf</li>"));
+        assert!(html.ends_with("</ul></div>"));
+    }
+
+    #[test]
+    fn withheld_headline_counts_withheld_and_lists_policy_and_partial() {
+        let withheld = [WithheldAttachment { filename: "run.exe".into(), category: WithheldCategory::Policy }];
+        let attachments = [att("a.pdf", true), att("b.pdf", true)];
+        let n = Notice::new(&withheld, &attachments).unwrap();
+        assert_eq!(n.headline(), "SECURITY NOTICE: 1 attachment was withheld");
+        let text = n.text().join("\n");
+        assert!(text.contains(&format!("{} (1):\n  - run.exe", Notice::POLICY_LABEL)));
+        assert!(text.contains(&format!("{} (2):\n  - a.pdf\n  - b.pdf", Notice::PARTIAL_LABEL)));
+        assert!(text.ends_with(Notice::ADVICE));
+        assert!(n.html().contains("&#39;s file-type policy"));
+    }
 }

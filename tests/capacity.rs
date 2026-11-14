@@ -20,27 +20,6 @@ impl Drop for TestWorker {
     }
 }
 
-async fn database_url(e: &Env) -> String {
-    let db: String = sqlx::query_scalar("SELECT current_database()").fetch_one(&e.pool).await.unwrap();
-    format!("{}/{}", admin_url().rsplit_once('/').unwrap().0, db)
-}
-
-async fn run_cli(e: &Env, args: &[&str]) -> std::process::Output {
-    let forms = e._dir.path().join("cli-forms.json");
-    std::fs::write(&forms, r#"{"version":1,"forms":[]}"#).unwrap();
-    Command::new(env!("CARGO_BIN_EXE_raxo-cli"))
-        .env_clear()
-        .env("DATABASE_URL", database_url(e).await)
-        .env("FORMS_CONFIG_PATH", forms)
-        .env("STORAGE_DIR", e.storage.root())
-        .env("SMTP_HOST", "127.0.0.1")
-        .env("SMTP_PORT", e.smtp.port.to_string())
-        .env("SMTP_NODE_ID", "test-node")
-        .args(args)
-        .output()
-        .unwrap()
-}
-
 #[tokio::test]
 async fn capacity_cli_reports_a_missing_subcommand() {
     let e = env(EnvOpts::default()).await;
